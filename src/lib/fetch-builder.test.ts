@@ -1,10 +1,16 @@
-import { test, describe } from "node:test";
+import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 
 import fetchBuilder from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
 
 const getToken = () => "some-complex-token";
+const onUnauthorized = mock.fn();
+
+const fetcher = fetchBuilder("https://example.com", {
+	getToken,
+	onUnauthorized,
+});
 
 describe("fetch-builder tests methods", () => {
 	test("GET: should make a GET request with the correct header and return success=true", async () => {
@@ -25,9 +31,7 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com", { getToken })
-			.get<object>("/test")
-			.fetch();
+		const result = await fetcher.get<object>("/test").fetch();
 		assert.equal(result.success, true);
 		assert.deepEqual(result.data, { data: "ok" });
 	});
@@ -52,7 +56,7 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com", { getToken })
+		const result = await fetcher
 			.post<{ created: boolean }, typeof body>("/create")
 			.fetch(body);
 		assert.equal(result.success, true);
@@ -79,7 +83,7 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com", { getToken })
+		const result = await fetcher
 			.put<{ updated: boolean }, typeof body>("/update")
 			.fetch(body);
 		assert.equal(result.success, true);
@@ -105,7 +109,7 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com")
+		const result = await fetcher
 			.patch<{ updated: boolean }, typeof patchData>("/resource")
 			.fetch(patchData);
 		assert.equal(result.success, true);
@@ -115,6 +119,7 @@ describe("fetch-builder tests methods", () => {
 	test("DELETE: should return success=true and data=null", async () => {
 		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(init?.method, "DELETE");
+
 			return new Response(null, {
 				status: 204,
 				headers: { "Content-Type": "application/ld+json" },
@@ -122,20 +127,12 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com")
-			.del("/resource")
-			.fetch();
+		const result = await fetcher.del("/resource").fetch();
 		assert.equal(result.success, true);
 		assert.equal(result.data, null);
 	});
 
 	test("Error handling: if the response is not OK, return success=false and error", async () => {
-		const api = fetchBuilder("https://example.com", {
-			onUnauthorized: async () => {
-				// Verify that this function is called
-			},
-		});
-
 		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
 			return new Response(JSON.stringify({ detail: "Not authorized" }), {
 				status: 401,
@@ -144,7 +141,8 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await api.get<object>("/secret").fetch();
+		const result = await fetcher.get<object>("/secret").fetch();
+		assert.equal(onUnauthorized.mock.callCount(), 1);
 		assert.equal(result.success, false);
 		assert.deepEqual(result.error, { detail: "Not authorized" });
 	});
@@ -165,7 +163,7 @@ describe("fetch-builder tests GET options", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com")
+		const result = await fetcher
 			.get<{ items: object[] }>("/items")
 			.withOptions({
 				pagination: true,
@@ -193,7 +191,7 @@ describe("fetch-builder tests GET options", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com")
+		const result = await fetcher
 			.get<{ items: object[] }>("/items")
 			.withOptions({
 				pagination: false,
@@ -219,7 +217,7 @@ describe("fetch-builder tests GET options", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetchBuilder("https://example.com")
+		const result = await fetcher
 			.get<Collection<{ name: string; age: number }, `/items/${number}`>>(
 				"/items"
 			)

@@ -1,7 +1,7 @@
 {
 	"name": "apiplatform-fetch-builder",
-	"version": "0.0.1",
-  	"description": "A TypeScript library for making typed fetch requests to ApiPlatform and Hydra APIs, supporting pagination, sorting, filtering, and more.",
+	"version": "0.0.2",
+	"description": "A TypeScript library for making typed fetch requests to ApiPlatform and Hydra APIs, supporting pagination, sorting, filtering, and more.",
 	"type": "module",
 	"repository": {
 		"type": "git",
@@ -26,8 +26,9 @@
 	},
 	"scripts": {
 		"build:clean": "rm -rf dist",
+		"build:setup": "mkdir -p dist && cp package.json dist && cp README.md dist && cp LICENSE dist",
 		"build:js": "tsc -p tsconfig.lib.json && find dist/types -type f ! -name '*.ts' -delete",
-		"build": "pnpm build:clean && pnpm build:js",
+		"build": "pnpm build:clean && pnpm build:setup && pnpm build:js",
 		"typecheck": "tsc -p tsconfig.lib.json --noEmit",
 		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'"
 	},
