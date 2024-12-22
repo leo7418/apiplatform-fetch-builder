@@ -1,6 +1,6 @@
 {
 	"name": "apiplatform-fetch-builder",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"description": "A TypeScript library for making typed fetch requests to ApiPlatform and Hydra APIs, supporting pagination, sorting, filtering, and more.",
 	"type": "module",
 	"repository": {
@@ -21,9 +21,8 @@
 	],
 	"author": "leo7418",
 	"license": "MIT",
-	"exports": {
-		".": "./dist/apiplatform-fetch-builder.js"
-	},
+	"main": "./index.js",
+	"types": "./index.d.ts",
 	"scripts": {
 		"build:clean": "rm -rf dist",
 		"build:setup": "mkdir -p dist && cp package.json dist && cp README.md dist && cp LICENSE dist",

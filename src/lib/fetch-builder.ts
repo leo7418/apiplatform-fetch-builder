@@ -52,7 +52,7 @@ type BuilderConfig = {
 	onUnauthorized?: () => void | Promise<void>;
 };
 
-const builder = (entrypoint: string, config: BuilderConfig = {}) => {
+const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
 		const url = new URL(path, entrypoint);
 		if (searchParams) url.search = searchParams.toString();
@@ -225,4 +225,4 @@ const builder = (entrypoint: string, config: BuilderConfig = {}) => {
 	return { get, post, patch, put, del };
 };
 
-export default builder;
+export default fetchBuilder;
