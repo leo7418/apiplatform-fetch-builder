@@ -4,14 +4,14 @@
 [![npm downloads](https://img.shields.io/npm/dm/apiplatform-fetch-builder.svg)](https://www.npmjs.com/package/apiplatform-fetch-builder)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-**apiplatform-fetch-builder** is a TypeScript library designed to simplify and streamline interactions with APIs built on [ApiPlatform](https://api-platform.com/) and Hydra. It provides a flexible builder-pattern interface for making typed `fetch` requests, handling pagination, sorting, filtering, and other common query operations. By integrating type definitions, this library ensures that developers benefit from static type checking and an improved developer experience when working with complex API responses and custom request configurations.
+**apiplatform-fetch-builder** is a TypeScript library designed to simplify and streamline interactions with [ApiPlatform](https://api-platform.com/) / Hydra APIs. It provides a builder-pattern interface for making typed `fetch` requests, handling pagination, sorting, filtering, property selection, and includes an optional `entityServiceBuilder` for more advanced resource CRUD operations with type safety.
 
 ## Features
-
-- **Typed `fetch` requests:** Leverage TypeScript’s static type system to ensure safety and reduce runtime errors.
-- **Builder-pattern interface:** Easily compose requests with pagination, sorting, filtering, and property selection.
-- **Hydra & ApiPlatform compatibility:** Designed to integrate seamlessly with Hydra-based APIs.
-- **No bundler required:** Uses native `fetch` and `URLSearchParams`, keeping dependencies minimal.
+- **Typed `fetch` requests**  
+- **Builder-pattern interface** (pagination, sorting, filtering, property selection)  
+- **Hydra & ApiPlatform compatibility**  
+- **Optional `entityServiceBuilder`** for CRUD (Create, Read, Update, Delete) operations with typed IRIs  
+- **No bundler required**
 
 ## Installation
 
@@ -23,9 +23,9 @@ yarn add apiplatform-fetch-builder
 pnpm add apiplatform-fetch-builder
 ```
 
-## Usage Example
+## Quick Usage Example
 
-```typescript
+```ts
 import builder from "apiplatform-fetch-builder";
 
 const api = builder("https://api.example.com", {
@@ -62,16 +62,47 @@ const paginatedResult = await api
 if (paginatedResult.success) {
   console.log("Paginated items:", paginatedResult.data.items);
 }
+```
 
-// POST
-const postResult = await api
-  .post<{ created: boolean }, { name: string }>("/items")
-  .fetch({ name: "New Item" });
+## Using `entityServiceBuilder`
 
-if (postResult.success) {
-  console.log("Item created successfully!");
-} else {
-  console.error("Item creation failed:", postResult.error);
+```ts
+import fetchBuilder from "apiplatform-fetch-builder";
+import entityServiceBuilder from "apiplatform-fetch-builder/entity-service-builder"; 
+import type { Company, CompanyBody, CompanyIri } from "./types/company";
+
+// Create a typed service builder
+const companyService = entityServiceBuilder<CompanyIri, CompanyBody, Company>(
+  fetchBuilder("https://api.example.com"), 
+  "/companies"
+);
+
+// GET collection with options
+const companiesResult = await companyService.getAll({
+  pagination: true,
+  pageIndex: 1,
+  pageSize: 10,
+  sortBy: [{ id: "name", desc: false }],
+  properties: ["name", "description", "ceo", "employees.id"] as const,
+});
+
+if (companiesResult.success) {
+  console.log("Companies:", companiesResult.data["hydra:member"]);
+}
+
+// GET single item
+const companyResult = await companyService.get(1);
+if (companyResult.success) {
+  console.log("Company:", companyResult.data);
+}
+
+// CREATE new item
+const createResult = await companyService.create({
+  name: "New Company",
+  description: "We build new things",
+});
+if (createResult.success) {
+  console.log("Created company:", createResult.data);
 }
 ```
 
@@ -80,28 +111,42 @@ if (postResult.success) {
 ### `builder(entrypoint: string, config?: BuilderConfig)`
 
 **Parameters:**
+- `entrypoint: string`: Base URL of your API (e.g., `"https://api.example.com"`).
+- `config?: BuilderConfig`: Optional config object.
+  - `getToken?: () => string | null | Promise<string | null>`  
+  - `onUnauthorized?: () => void | Promise<void>`
 
-- `entrypoint: string`: The base URL of your API (e.g., `"https://api.example.com"`).
-- `config?: BuilderConfig`: Optional configuration object.
-  - `getToken?: () => string | null | Promise<string | null>`: Function that returns the authorization token.
-  - `onUnauthorized?: () => void | Promise<void>`: Callback triggered on `401 Unauthorized` responses.
+**Returns:** An object with methods `get`, `post`, `patch`, `put`, and `delete`.
 
-**Returns:** An object with methods `get`, `post`, `patch`, and `del`.
+---
 
 ### `get(url: string)`
 
 Returns an object with:
-
 - `fetch(options?: FetchOptions)`: Performs a GET request.
-- `withOptions(getOptions: GetOptions)`: Returns a specialized fetch function that applies pagination, sorting, filtering, and properties selection.
+- `withOptions(getOptions: GetOptions)`: Applies pagination, sorting, filtering, property selection.
 
-### `post(url: string)`, `patch(url: string)`, `del(url: string)`
+### `post(url: string)`, `patch(url: string)`, `put(url: string)`, `delete(url: string)`
 
-Similar to `get`, but for respective HTTP methods. `post` and `patch` accept a `body` parameter for the request payload, while `del` is for DELETE requests and returns `null` as data on success.
+Similar to `get` but for respective HTTP methods. `post`, `patch`, and `put` accept a request body. `delete` returns `null` data on success.
+
+---
+
+### `entityServiceBuilder(...)`
+
+**Parameters:**
+- Generic type parameters: `<IriType, BodyType, EntityType>`
+- Accepts a fetcher (from `builder(...)`) or a string/entrypoint object.
+- `entityPath: string` for the resource (e.g. `"/companies"`).
+
+**Returns:**  
+An object with methods: `create`, `get`, `getAll`, `update`, `replace`, `delete`.
+
+---
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on the [GitHub repository](https://github.com/leo7418/apiplatform-fetch-builder).
+Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/leo7418/apiplatform-fetch-builder).
 
 ## License
 
