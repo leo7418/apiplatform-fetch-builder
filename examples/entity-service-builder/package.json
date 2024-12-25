@@ -11,6 +11,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "apiplatform-fetch-builder": "^0.0.3"
+    "apiplatform-fetch-builder": "^0.0.4"
   }
 }

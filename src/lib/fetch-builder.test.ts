@@ -2,7 +2,7 @@ import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 
 import fetchBuilder from "./fetch-builder.ts";
-import type { Collection } from "../types/collection.ts";
+import type { Collection } from "@/types/collection.ts";
 
 const getToken = () => "some-complex-token";
 const onUnauthorized = mock.fn();
@@ -127,7 +127,7 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetcher.del("/resource").fetch();
+		const result = await fetcher.delete("/resource").fetch();
 		assert.equal(result.success, true);
 		assert.equal(result.data, null);
 	});

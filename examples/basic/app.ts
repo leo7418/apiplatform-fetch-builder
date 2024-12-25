@@ -1,7 +1,8 @@
-import fetchBuilder from "apiplatform-fetch-builder/lib/fetch-builder";
-import type { CompanyCollection } from "./types/company.ts";
+import fetchBuilder from "apiplatform-fetch-builder";
 
-const fetcher = fetchBuilder("https://an-api.com");
+import type { CompanyCollection, CompanyItem } from "./types/company.ts";
+
+const fetcher = fetchBuilder("https://your-api.com");
 
 const companiesResult = await fetcher
 	.get<CompanyCollection>("/companies")
@@ -13,6 +14,8 @@ const companiesResult = await fetcher
 		properties: [
 			"name",
 			"description",
+			"stats",
+			"ceo",
 			"employees.id",
 			"employees.email",
 			"employees.fullName",
@@ -26,4 +29,14 @@ if (companiesResult.success) {
 	console.log(companies);
 } else {
 	console.error(companiesResult.error);
+}
+
+const companyResult = await fetcher.get<CompanyItem>("/companies/1").fetch();
+
+if (companyResult.success) {
+	const company = companyResult.data;
+
+	console.log(company);
+} else {
+	console.error(companyResult.error);
 }

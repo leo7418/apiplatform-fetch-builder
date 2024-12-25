@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      apiplatform-fetch-builder:
+        specifier: ^0.0.4
+        version: 0.0.4
+
+packages:
+
+  apiplatform-fetch-builder@0.0.4:
+    resolution: {integrity: sha512-JMhp22t3KMnP7lgvoBkgrBiM6rb2LIZVcw3yWkQOkFlnLVoSceKlPt2wiJp+AqS1wY+H5YCnGDu+UZEWfaUykA==}
+
+snapshots:
+
+  apiplatform-fetch-builder@0.0.4: {}

@@ -1,8 +1,8 @@
 import { isObject, last, toPath } from "./utils.ts";
-import type { Error } from "../types/error.ts";
-import type { PropertyPath } from "../types/property-path.ts";
-import type { PropertyValue } from "../types/property-value.ts";
-import type { Response } from "../types/response.ts";
+import type { Error } from "@/types/error.ts";
+import type { PropertyPath } from "@/types/property-path.ts";
+import type { PropertyValue } from "@/types/property-value.ts";
+import type { Response } from "@/types/response.ts";
 
 const methods = {
 	GET: "GET",
@@ -19,7 +19,7 @@ type FetchOptions<In = never> = Omit<RequestInit, "method" | "body"> & {
 	searchParams?: URLSearchParams;
 };
 
-type GetOptions<
+export type GetOptions<
 	Out extends object,
 	P extends PropertyPath<Out>[] | undefined
 > = {
@@ -222,7 +222,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 			request<null>(url, methods.DELETE, options),
 	});
 
-	return { get, post, patch, put, del };
+	return { get, post, patch, put, delete: del };
 };
 
 export default fetchBuilder;
