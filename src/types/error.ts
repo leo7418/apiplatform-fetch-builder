@@ -6,7 +6,7 @@ type Error<S extends number> = {
 	"hydra:title": string;
 	status: S;
 	title: string;
-	trace: {
+	trace?: {
 		class: string;
 		file: string;
 		function: string;

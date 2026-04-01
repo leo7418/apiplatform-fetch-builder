@@ -2,7 +2,7 @@ import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 
 import fetchBuilder from "./fetch-builder.ts";
-import type { Collection } from "@/types/collection.ts";
+import type { Collection } from "../types/collection.ts";
 
 const getToken = () => "some-complex-token";
 const onUnauthorized = mock.fn();
@@ -21,7 +21,7 @@ describe("fetch-builder tests methods", () => {
 				(init?.headers as Record<string, string> | undefined)?.[
 					"Authorization"
 				],
-				"Bearer some-complex-token"
+				"Bearer some-complex-token",
 			);
 
 			return new Response(JSON.stringify({ data: "ok" }), {
@@ -32,7 +32,7 @@ describe("fetch-builder tests methods", () => {
 		global.fetch = spy;
 
 		const result = await fetcher.get<object>("/test").fetch();
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { data: "ok" });
 	});
 
@@ -44,7 +44,7 @@ describe("fetch-builder tests methods", () => {
 			assert.equal(init?.method, "POST");
 			assert.equal(
 				(init?.headers as Record<string, string> | undefined)?.["Content-Type"],
-				"application/ld+json"
+				"application/ld+json",
 			);
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
 			assert.deepEqual(sentBody, body);
@@ -59,7 +59,7 @@ describe("fetch-builder tests methods", () => {
 		const result = await fetcher
 			.post<{ created: boolean }, typeof body>("/create")
 			.fetch(body);
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { created: true });
 	});
 
@@ -71,7 +71,7 @@ describe("fetch-builder tests methods", () => {
 			assert.equal(init?.method, "PUT");
 			assert.equal(
 				(init?.headers as Record<string, string> | undefined)?.["Content-Type"],
-				"application/ld+json"
+				"application/ld+json",
 			);
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
 			assert.deepEqual(sentBody, body);
@@ -86,7 +86,7 @@ describe("fetch-builder tests methods", () => {
 		const result = await fetcher
 			.put<{ updated: boolean }, typeof body>("/update")
 			.fetch(body);
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { updated: true });
 	});
 
@@ -97,7 +97,7 @@ describe("fetch-builder tests methods", () => {
 			assert.equal(init?.method, "PATCH");
 			assert.equal(
 				(init?.headers as Record<string, string> | undefined)?.["Content-Type"],
-				"application/merge-patch+json"
+				"application/merge-patch+json",
 			);
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
 			assert.deepEqual(sentBody, patchData);
@@ -112,7 +112,7 @@ describe("fetch-builder tests methods", () => {
 		const result = await fetcher
 			.patch<{ updated: boolean }, typeof patchData>("/resource")
 			.fetch(patchData);
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { updated: true });
 	});
 
@@ -128,12 +128,12 @@ describe("fetch-builder tests methods", () => {
 		global.fetch = spy;
 
 		const result = await fetcher.delete("/resource").fetch();
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.equal(result.data, null);
 	});
 
 	test("Error handling: if the response is not OK, return success=false and error", async () => {
-		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
+		const spy = async () => {
 			return new Response(JSON.stringify({ detail: "Not authorized" }), {
 				status: 401,
 				headers: { "Content-Type": "application/ld+json" },
@@ -143,17 +143,17 @@ describe("fetch-builder tests methods", () => {
 
 		const result = await fetcher.get<object>("/secret").fetch();
 		assert.equal(onUnauthorized.mock.callCount(), 1);
-		assert.equal(result.success, false);
+		assert.ok(!result.success);
 		assert.deepEqual(result.error, { detail: "Not authorized" });
 	});
 });
 
 describe("fetch-builder tests GET options", () => {
 	test("GET with options: should add the correct searchParams", async () => {
-		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
+		const spy = async (input: RequestInfo | URL) => {
 			assert.match(
 				input.toString(),
-				/https:\/\/example.com\/items\?pagination=true&page=2&itemsPerPage=20&order%5Bname%5D=ASC/
+				/https:\/\/example.com\/items\?pagination=true&page=2&itemsPerPage=20&order%5Bname%5D=ASC/,
 			);
 
 			return new Response(JSON.stringify({ items: [] }), {
@@ -173,15 +173,15 @@ describe("fetch-builder tests GET options", () => {
 			})
 			.fetch();
 
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { items: [] });
 	});
 
 	test("GET with filters: should add the correct filter parameters", async () => {
-		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
+		const spy = async (input: RequestInfo | URL) => {
 			assert.match(
 				input.toString(),
-				/https:\/\/example.com\/items\?status=active/
+				/https:\/\/example.com\/items\?pagination=false&status=active/,
 			);
 
 			return new Response(JSON.stringify({ items: [] }), {
@@ -199,15 +199,15 @@ describe("fetch-builder tests GET options", () => {
 			})
 			.fetch();
 
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { items: [] });
 	});
 
 	test("GET with properties: should add the correct property parameters", async () => {
-		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
+		const spy = async (input: RequestInfo | URL) => {
 			assert.match(
 				input.toString(),
-				/https:\/\/example.com\/items\?properties%5B%5D=name&properties%5B%5D=age/
+				/https:\/\/example.com\/items\?pagination=false&properties%5B%5D=name&properties%5B%5D=age/,
 			);
 
 			return new Response(JSON.stringify({ items: [] }), {
@@ -219,7 +219,7 @@ describe("fetch-builder tests GET options", () => {
 
 		const result = await fetcher
 			.get<Collection<{ name: string; age: number }, `/items/${number}`>>(
-				"/items"
+				"/items",
 			)
 			.withOptions({
 				pagination: false,
@@ -227,7 +227,68 @@ describe("fetch-builder tests GET options", () => {
 			})
 			.fetch();
 
-		assert.equal(result.success, true);
+		assert.ok(result.success);
 		assert.deepEqual(result.data, { items: [] });
+	});
+});
+
+describe("fetch-builder security", () => {
+	test("assertSafeKey: should throw on unsafe sortBy id", () => {
+		assert.throws(
+			() =>
+				fetcher
+					.get<{ items: object[] }>("/items")
+					.withOptions({ sortBy: [{ id: "name; DROP TABLE", desc: false }] })
+					.fetch(),
+			TypeError,
+		);
+	});
+
+	test("assertSafeKey: should throw on unsafe filter id", () => {
+		assert.throws(
+			() =>
+				fetcher
+					.get<{ items: object[] }>("/items")
+					.withOptions({ filters: [{ id: "status<script>", value: "x" }] })
+					.fetch(),
+			TypeError,
+		);
+	});
+
+	test("assertSafeKey: should not throw on valid dot-notation key", async () => {
+		global.fetch = async () =>
+			new Response(JSON.stringify({ items: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/ld+json" },
+			});
+
+		await assert.doesNotReject(() =>
+			fetcher
+				.get<{ items: object[] }>("/items")
+				.withOptions({ sortBy: [{ id: "employee.name", desc: false }] })
+				.fetch(),
+		);
+	});
+
+	test("assertSafeToken: should throw on token with whitespace", async () => {
+		const unsafeFetcher = fetchBuilder("https://example.com", {
+			getToken: () => "bad token",
+		});
+
+		await assert.rejects(
+			() => unsafeFetcher.get<object>("/test").fetch(),
+			TypeError,
+		);
+	});
+
+	test("assertSafeToken: should throw on token with newline", async () => {
+		const unsafeFetcher = fetchBuilder("https://example.com", {
+			getToken: () => "bad\ntoken",
+		});
+
+		await assert.rejects(
+			() => unsafeFetcher.get<object>("/test").fetch(),
+			TypeError,
+		);
 	});
 });

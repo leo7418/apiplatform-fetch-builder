@@ -9,14 +9,14 @@ importers:
   .:
     dependencies:
       apiplatform-fetch-builder:
-        specifier: ^0.0.4
-        version: 0.0.4
+        specifier: ^0.0.5
+        version: 0.0.5
 
 packages:
 
-  apiplatform-fetch-builder@0.0.4:
-    resolution: {integrity: sha512-JMhp22t3KMnP7lgvoBkgrBiM6rb2LIZVcw3yWkQOkFlnLVoSceKlPt2wiJp+AqS1wY+H5YCnGDu+UZEWfaUykA==}
+  apiplatform-fetch-builder@0.0.5:
+    resolution: {integrity: sha512-xN23zuu5v4mQB8NVdJIg2lpIHFdQasOBjazi3oYB65A4+G6Yw2e/tAnIo3tvqqcGMBdtj0SpDH3LEOeHMLQe/w==}
 
 snapshots:
 
-  apiplatform-fetch-builder@0.0.4: {}
+  apiplatform-fetch-builder@0.0.5: {}

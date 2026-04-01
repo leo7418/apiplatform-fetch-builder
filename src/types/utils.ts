@@ -28,7 +28,7 @@ export type Tail<T extends string> = T extends `${string}.${infer Rest}`
 
 export type Split<
 	S extends string,
-	D extends string = "."
+	D extends string = ".",
 > = S extends `${infer First}${D}${infer Rest}`
 	? [First, ...Split<Rest, D>]
 	: [S];
@@ -49,14 +49,14 @@ type Prev = [never, 0, 1, 2, 3, 4, 5];
 export type NestedKeyOf<T, Depth extends number = 5> = Depth extends never
 	? never
 	: T extends object
-	? {
-			[K in keyof T]-?:
-				| K
-				| (T[K] extends Array<infer U>
-						? Join<K, NestedKeyOf<U, Prev[Depth]>>
-						: Join<K, NestedKeyOf<T[K], Prev[Depth]>>);
-	  }[keyof T]
-	: never;
+		? {
+				[K in keyof T]-?:
+					| K
+					| (T[K] extends Array<infer U>
+							? Join<K, NestedKeyOf<U, Prev[Depth]>>
+							: Join<K, NestedKeyOf<T[K], Prev[Depth]>>);
+			}[keyof T]
+		: never;
 
 export type DeepPick<T, K extends string> = T extends object
 	? NonNullable<T> extends readonly unknown[]
@@ -66,13 +66,13 @@ export type DeepPick<T, K extends string> = T extends object
 					T[P],
 					Tail<Extract<K, `${P}.${string}`>>
 				>;
-		  }
+			}
 	: T;
 
 export type DeepPartial<T> = T extends object
 	? {
 			[P in keyof T]?: DeepPartial<T[P]>;
-	  }
+		}
 	: T;
 
 export type SecureType<T, O> = T extends O ? T : never;

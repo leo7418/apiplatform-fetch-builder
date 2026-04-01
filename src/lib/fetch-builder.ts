@@ -1,27 +1,19 @@
 import { isObject, last, toPath } from "./utils.ts";
-import type { Error } from "@/types/error.ts";
-import type { PropertyPath } from "@/types/property-path.ts";
-import type { PropertyValue } from "@/types/property-value.ts";
-import type { Response } from "@/types/response.ts";
+import type { Error } from "../types/error.ts";
+import type { PropertyPath } from "../types/property-path.ts";
+import type { PropertyValue } from "../types/property-value.ts";
+import type { Response } from "../types/response.ts";
 
-const methods = {
-	GET: "GET",
-	POST: "POST",
-	PATCH: "PATCH",
-	PUT: "PUT",
-	DELETE: "DELETE",
-} as const;
+type FetchMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
-type FetchMethod = keyof typeof methods;
-
-type FetchOptions<In = never> = Omit<RequestInit, "method" | "body"> & {
+export type FetchOptions<In = never> = Omit<RequestInit, "method" | "body"> & {
 	body?: In;
 	searchParams?: URLSearchParams;
 };
 
 export type GetOptions<
 	Out extends object,
-	P extends PropertyPath<Out>[] | undefined
+	P extends PropertyPath<Out>[] | undefined,
 > = {
 	sortBy?: { id: string; desc: boolean }[];
 	filters?: {
@@ -47,9 +39,93 @@ export type GetOptions<
 	  }
 );
 
-type BuilderConfig = {
+export type BuilderConfig = {
 	getToken?: () => string | null | Promise<string | null>;
 	onUnauthorized?: () => void | Promise<void>;
+};
+
+const assertSafeKey = (key: string, context: string) => {
+	if (!/^[\w.]+$/.test(key)) {
+		throw new TypeError(`Unsafe ${context} key: "${key}"`);
+	}
+};
+
+type AnyGetOptions = {
+	pagination?: boolean;
+	pageIndex?: number;
+	pageSize?: number;
+	sortBy?: { id: string; desc: boolean }[];
+	filters?: {
+		id: string;
+		value:
+			| Date
+			| string
+			| number
+			| (string | number)[]
+			| Record<string | number, string | number>;
+	}[];
+	properties?: string[];
+};
+
+const buildGetOptions = ({
+	pagination = true,
+	pageIndex = 0,
+	pageSize = 10,
+	sortBy = [],
+	filters = [],
+	properties = [],
+}: AnyGetOptions): URLSearchParams => {
+	const searchParams = new URLSearchParams();
+
+	if (pagination) {
+		searchParams.append("pagination", "true");
+		searchParams.append("page", (pageIndex + 1).toString());
+		searchParams.append("itemsPerPage", pageSize.toString());
+	} else {
+		searchParams.append("pagination", "false");
+	}
+
+	sortBy.forEach(({ id, desc }) => {
+		assertSafeKey(id, "sortBy");
+		searchParams.append(`order[${id}]`, desc ? "DESC" : "ASC");
+	});
+
+	filters.forEach(({ id, value }) => {
+		assertSafeKey(id, "filter");
+		if (value instanceof Date) {
+			searchParams.append(id, value.toISOString());
+		} else if (Array.isArray(value)) {
+			value.forEach((subValue) =>
+				searchParams.append(`${id}[]`, subValue.toString()),
+			);
+		} else if (isObject(value)) {
+			Object.keys(value).forEach((subId) => {
+				assertSafeKey(subId, "filter sub-key");
+				const subValue = value[subId];
+				if (subValue !== null) {
+					searchParams.append(`${id}[${subId}]`, subValue.toString());
+				}
+			});
+		} else {
+			searchParams.append(id, value.toString());
+		}
+	});
+
+	properties.forEach((property) => {
+		const pathArr = toPath(property);
+		if (pathArr.length === 1) {
+			searchParams.append("properties[]", property);
+		} else {
+			let propertyName = "properties";
+			for (let i = 0; i < pathArr.length - 1; i += 1) {
+				propertyName += `[${pathArr[i]}]`;
+			}
+			propertyName += "[]";
+			searchParams.append(propertyName, last(pathArr)!);
+		}
+	});
+
+	return searchParams;
 };
 
 const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
@@ -59,167 +135,88 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		return url.toString();
 	};
 
-	const buildGetOptions = <
-		Out extends object,
-		P extends PropertyPath<Out>[] | undefined
-	>({
-		pagination = true,
-		pageIndex = 0,
-		pageSize = 10,
-		sortBy = [],
-		filters = [],
-		properties = [],
-	}: GetOptions<Out, P>): URLSearchParams => {
-		const searchParams = new URLSearchParams();
-
-		if (pagination) {
-			searchParams.append("pagination", "true");
-
-			if (typeof pageIndex !== "undefined") {
-				searchParams.append("page", (pageIndex + 1).toString());
-			}
-			if (typeof pageSize !== "undefined") {
-				searchParams.append("itemsPerPage", pageSize.toString());
-			}
-		}
-
-		sortBy.forEach(({ id, desc }) => {
-			searchParams.append(`order[${id}]`, desc ? "DESC" : "ASC");
-		});
-
-		filters.forEach(({ id, value }) => {
-			if (value instanceof Date) {
-				searchParams.append(id, value.toISOString());
-			} else if (Array.isArray(value)) {
-				value.forEach((subValue) =>
-					searchParams.append(`${id}[]`, subValue.toString())
-				);
-			} else if (isObject(value)) {
-				Object.keys(value).forEach((subId) => {
-					const subValue = value[subId];
-
-					if (subValue !== null) {
-						searchParams.append(`${id}[${subId}]`, subValue.toString());
-					}
-				});
-			} else {
-				searchParams.append(id, value.toString());
-			}
-		});
-
-		properties.forEach((property) => {
-			const pathArr = toPath(property);
-			if (pathArr.length === 1) {
-				searchParams.append("properties[]", property);
-			} else {
-				let propertyName = "properties";
-				for (let i = 0; i < pathArr.length - 1; i += 1) {
-					propertyName += `[${pathArr[i]}]`;
-				}
-				propertyName += "[]";
-				searchParams.append(propertyName, last(pathArr) || "");
-			}
-		});
-
-		return searchParams;
-	};
-
 	const request = async <Out extends object | null, In = never>(
 		url: string,
 		method: FetchMethod,
-		options: FetchOptions<In> = {}
+		options: FetchOptions<In> = {},
 	): Promise<Response<Out>> => {
-		try {
-			const { body, headers, searchParams, ...restOptions } = options;
-			const token = await (config.getToken?.() || Promise.resolve(null));
-			const response = await fetch(buildURL(url, searchParams), {
-				method,
-				headers: {
-					...(body instanceof FormData
-						? {}
-						: {
-								"Content-Type":
-									method !== methods.PATCH
-										? "application/ld+json"
-										: "application/merge-patch+json",
-						  }),
-					Accept: "application/ld+json",
-					...(token ? { Authorization: `Bearer ${token}` } : {}),
-					...headers,
-				},
-				body: body
-					? body instanceof FormData
-						? body
-						: JSON.stringify(body)
-					: undefined,
-				...restOptions,
-			});
+		const { body, headers, searchParams, ...restOptions } = options;
 
-			if (!response.ok) {
-				if (response.status === 401) {
-					await config.onUnauthorized?.();
-				}
+		const rawToken = await (config.getToken?.() ?? Promise.resolve(null));
+		const token = rawToken || null;
+		if (token && /\s/.test(token)) {
+			throw new TypeError("Invalid Bearer token");
+		}
 
-				const json = await response.json();
-				const error: Error<number> = json;
+		const response = await fetch(buildURL(url, searchParams), {
+			method,
+			headers: {
+				...(body instanceof FormData
+					? {}
+					: {
+							"Content-Type":
+								method !== "PATCH"
+									? "application/ld+json"
+									: "application/merge-patch+json",
+						}),
+				Accept: "application/ld+json",
+				...(token ? { Authorization: `Bearer ${token}` } : {}),
+				...headers,
+			},
+			body: body
+				? body instanceof FormData
+					? body
+					: JSON.stringify(body)
+				: undefined,
+			...restOptions,
+		});
 
-				console.error(
-					"Request failed:",
-					error.detail ||
-						error["hydra:description"] ||
-						json.message ||
-						"Something went wrong"
-				);
-
-				return { success: false, error };
+		if (!response.ok) {
+			if (response.status === 401) {
+				await config.onUnauthorized?.();
 			}
 
-			const data = method === methods.DELETE ? null : await response.json();
+			const json = await response.json();
+			const error: Error<number> = json;
 
-			return { success: true, data };
-		} catch (error) {
-			console.error("Request error:", error);
-
-			throw error;
+			return { success: false, error };
 		}
+
+		const data = method === "DELETE" ? null : await response.json();
+
+		return { success: true, data };
 	};
 
 	const get = <Out extends object>(url: string) => ({
-		fetch: (options?: FetchOptions) => request<Out>(url, methods.GET, options),
+		fetch: (options?: FetchOptions) => request<Out>(url, "GET", options),
 		withOptions: <P extends PropertyPath<Out>[]>(
-			getOptions: GetOptions<Out, P>
-		) => {
-			const searchParams = buildGetOptions(getOptions);
-
-			return {
-				...request,
-				fetch: (options?: FetchOptions) =>
-					request<PropertyValue<Out, P[number]>>(url, methods.GET, {
-						...options,
-						searchParams,
-					}),
-			};
-		},
+			getOptions: GetOptions<Out, P>,
+		) => ({
+			fetch: (options?: FetchOptions) =>
+				request<PropertyValue<Out, P[number]>>(url, "GET", {
+					...options,
+					searchParams: buildGetOptions(getOptions as AnyGetOptions),
+				}),
+		}),
 	});
 
 	const post = <Out extends object, In>(url: string) => ({
 		fetch: (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, methods.POST, { ...options, body }),
+			request<Out, In>(url, "POST", { ...options, body }),
 	});
 
 	const patch = <Out extends object, In>(url: string) => ({
 		fetch: (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, methods.PATCH, { ...options, body }),
+			request<Out, In>(url, "PATCH", { ...options, body }),
 	});
 
 	const put = <Out extends object, In>(url: string) => ({
 		fetch: (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, methods.PUT, { ...options, body }),
+			request<Out, In>(url, "PUT", { ...options, body }),
 	});
 
 	const del = (url: string) => ({
-		fetch: (options?: FetchOptions) =>
-			request<null>(url, methods.DELETE, options),
+		fetch: (options?: FetchOptions) => request<null>(url, "DELETE", options),
 	});
 
 	return { get, post, patch, put, delete: del };

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 
 import entityServiceBuilder from "./entity-service-builder.ts";
 import fetchBuilder from "./fetch-builder.ts";
-import type { Iri } from "@/types/iri.ts";
-import type { Item } from "@/types/item.ts";
-import type { Collection } from "@/types/collection.ts";
+import type { Iri } from "../types/iri.ts";
+import type { Item } from "../types/item.ts";
+import type { Collection } from "../types/collection.ts";
 
 type EntityIri = Iri<"entities">;
 type EntityBody = { name: string };
@@ -22,7 +22,7 @@ const fetcher = fetchBuilder("https://example.com", {
 const entityPath = "/entities";
 const entityService = entityServiceBuilder<EntityIri, EntityBody, Entity>(
 	fetcher,
-	entityPath
+	entityPath,
 );
 
 describe("entityServiceBuilder", () => {
@@ -36,7 +36,7 @@ describe("entityServiceBuilder", () => {
 		};
 
 		const postMocked = mock.fn(
-			fetcher.post<Item<Entity, EntityIri>, EntityBody>
+			fetcher.post<Item<Entity, EntityIri>, EntityBody>,
 		);
 		postMocked.mock.mockImplementationOnce(() => ({
 			fetch: async () => ({ success: true, data: response }),
@@ -47,7 +47,7 @@ describe("entityServiceBuilder", () => {
 
 		assert.strictEqual(postMocked.mock.callCount(), 1);
 		assert.strictEqual(postMocked.mock.calls[0].arguments[0], entityPath);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -65,7 +65,9 @@ describe("entityServiceBuilder", () => {
 			() =>
 				({
 					fetch: async () => ({ success: true, data: response }),
-				} as unknown as ReturnType<typeof fetcher.get<Item<Entity, EntityIri>>>)
+				}) as unknown as ReturnType<
+					typeof fetcher.get<Item<Entity, EntityIri>>
+				>,
 		);
 		fetcher.get = getMocked as unknown as typeof fetcher.get;
 
@@ -73,7 +75,7 @@ describe("entityServiceBuilder", () => {
 
 		assert.strictEqual(getMocked.mock.callCount(), 1);
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], iri);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -93,7 +95,9 @@ describe("entityServiceBuilder", () => {
 					withOptions: mock.fn(() => ({
 						fetch: async () => ({ success: true, data: response }),
 					})),
-				} as unknown as ReturnType<typeof fetcher.get<Item<Entity, EntityIri>>>)
+				}) as unknown as ReturnType<
+					typeof fetcher.get<Item<Entity, EntityIri>>
+				>,
 		);
 		fetcher.get = getMocked as unknown as typeof fetcher.get;
 
@@ -106,16 +110,21 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], iri);
 		assert.strictEqual(
 			(
-				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<Function>
+				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+					(...args: unknown[]) => unknown
+				>
 			).mock.callCount(),
-			1
+			1,
 		);
 		assert.strictEqual(
-			(getMocked.mock.calls[0].result!.withOptions as unknown as Mock<Function>)
-				.mock.calls[0].arguments[0],
-			getOptions
+			(
+				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+					(...args: unknown[]) => unknown
+				>
+			).mock.calls[0].arguments[0],
+			getOptions,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -140,7 +149,9 @@ describe("entityServiceBuilder", () => {
 			() =>
 				({
 					fetch: async () => ({ success: true, data: response }),
-				} as unknown as ReturnType<typeof fetcher.get<Item<Entity, EntityIri>>>)
+				}) as unknown as ReturnType<
+					typeof fetcher.get<Item<Entity, EntityIri>>
+				>,
 		);
 		fetcher.get = getMocked as unknown as typeof fetcher.get;
 
@@ -148,7 +159,7 @@ describe("entityServiceBuilder", () => {
 
 		assert.strictEqual(getMocked.mock.callCount(), 1);
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], entityPath);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -175,7 +186,9 @@ describe("entityServiceBuilder", () => {
 					withOptions: mock.fn(() => ({
 						fetch: async () => ({ success: true, data: response }),
 					})),
-				} as unknown as ReturnType<typeof fetcher.get<Item<Entity, EntityIri>>>)
+				}) as unknown as ReturnType<
+					typeof fetcher.get<Item<Entity, EntityIri>>
+				>,
 		);
 		fetcher.get = getMocked as unknown as typeof fetcher.get;
 
@@ -188,16 +201,21 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], entityPath);
 		assert.strictEqual(
 			(
-				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<Function>
+				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+					(...args: unknown[]) => unknown
+				>
 			).mock.callCount(),
-			1
+			1,
 		);
 		assert.strictEqual(
-			(getMocked.mock.calls[0].result!.withOptions as unknown as Mock<Function>)
-				.mock.calls[0].arguments[0],
-			getOptions
+			(
+				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+					(...args: unknown[]) => unknown
+				>
+			).mock.calls[0].arguments[0],
+			getOptions,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -212,7 +230,7 @@ describe("entityServiceBuilder", () => {
 		};
 
 		const patchMocked = mock.fn(
-			fetcher.patch<Item<Entity, EntityIri>, EntityBody>
+			fetcher.patch<Item<Entity, EntityIri>, EntityBody>,
 		);
 		patchMocked.mock.mockImplementationOnce(() => ({
 			fetch: async () => ({ success: true, data: response }),
@@ -224,9 +242,9 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(patchMocked.mock.callCount(), 1);
 		assert.strictEqual(
 			patchMocked.mock.calls[0].arguments[0],
-			`${entityPath}/1`
+			`${entityPath}/1`,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -241,7 +259,7 @@ describe("entityServiceBuilder", () => {
 		};
 
 		const patchMocked = mock.fn(
-			fetcher.patch<Item<Entity, EntityIri>, EntityBody>
+			fetcher.patch<Item<Entity, EntityIri>, EntityBody>,
 		);
 		patchMocked.mock.mockImplementationOnce(() => ({
 			fetch: async () => ({ success: true, data: response }),
@@ -253,9 +271,9 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(patchMocked.mock.callCount(), 1);
 		assert.strictEqual(
 			patchMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`
+			`${entityPath}/${id}`,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -270,7 +288,7 @@ describe("entityServiceBuilder", () => {
 		};
 
 		const patchMocked = mock.fn(
-			fetcher.patch<Item<Entity, EntityIri>, EntityBody>
+			fetcher.patch<Item<Entity, EntityIri>, EntityBody>,
 		);
 		patchMocked.mock.mockImplementationOnce(() => ({
 			fetch: async () => ({ success: true, data: response }),
@@ -282,9 +300,9 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(patchMocked.mock.callCount(), 1);
 		assert.strictEqual(
 			patchMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`
+			`${entityPath}/${id}`,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -308,7 +326,7 @@ describe("entityServiceBuilder", () => {
 
 		assert.strictEqual(putMocked.mock.callCount(), 1);
 		assert.strictEqual(putMocked.mock.calls[0].arguments[0], `${entityPath}/1`);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -333,9 +351,9 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(putMocked.mock.callCount(), 1);
 		assert.strictEqual(
 			putMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`
+			`${entityPath}/${id}`,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -360,9 +378,9 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(putMocked.mock.callCount(), 1);
 		assert.strictEqual(
 			putMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`
+			`${entityPath}/${id}`,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
@@ -380,9 +398,9 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(deleteMocked.mock.callCount(), 1);
 		assert.strictEqual(
 			deleteMocked.mock.calls[0].arguments[0],
-			`${entityPath}/1`
+			`${entityPath}/1`,
 		);
-		assert.strictEqual(result.success, true);
+		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, null);
 	});
 });

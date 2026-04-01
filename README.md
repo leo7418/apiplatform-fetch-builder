@@ -67,8 +67,7 @@ if (paginatedResult.success) {
 ## Using `entityServiceBuilder`
 
 ```ts
-import fetchBuilder from "apiplatform-fetch-builder";
-import entityServiceBuilder from "apiplatform-fetch-builder/entity-service-builder"; 
+import fetchBuilder, { entityServiceBuilder } from "apiplatform-fetch-builder";
 import type { Company, CompanyBody, CompanyIri } from "./types/company";
 
 // Create a typed service builder

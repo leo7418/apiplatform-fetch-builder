@@ -1,7 +1,7 @@
 import type { Iri } from "./iri.ts";
 import type { Item } from "./item.ts";
 
-type Collection<T, I extends Iri<string>> = {
+type Collection<T, I extends Iri<string> = Iri<string>> = {
 	"@context": string;
 	"@id": string;
 	"@type": "hydra:Collection";
@@ -15,14 +15,23 @@ type Collection<T, I extends Iri<string>> = {
 		"hydra:next"?: string;
 		"hydra:previous"?: string;
 	};
+	"hydra:search"?: {
+		"@type": "hydra:IriTemplate";
+		"hydra:template": string;
+		"hydra:variableRepresentation": string;
+		"hydra:mapping": {
+			"@type": "hydra:IriTemplateMapping";
+			"hydra:variable": string;
+			"hydra:property": string | null;
+			required: boolean;
+		}[];
+	};
 };
 
-export type GetCollectionItem<C> = C extends Collection<infer T, infer I>
-	? Item<T, I>
-	: never;
+export type GetCollectionItem<C> =
+	C extends Collection<infer T, infer I> ? Item<T, I> : never;
 
-export type SafeGetCollectionItem<T> = GetCollectionItem<T> extends never
-	? T
-	: GetCollectionItem<T>;
+export type SafeGetCollectionItem<T> =
+	GetCollectionItem<T> extends never ? T : GetCollectionItem<T>;
 
 export type { Collection };

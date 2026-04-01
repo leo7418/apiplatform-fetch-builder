@@ -1,6 +1,6 @@
 {
 	"name": "apiplatform-fetch-builder",
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"description": "A TypeScript library for making typed fetch requests to ApiPlatform and Hydra APIs, supporting pagination, sorting, filtering, and more.",
 	"type": "module",
 	"repository": {
@@ -23,17 +23,33 @@
 	"license": "MIT",
 	"main": "./index.js",
 	"types": "./index.d.ts",
+	"exports": {
+		".": {
+			"import": "./index.js",
+			"types": "./index.d.ts"
+		}
+	},
+	"sideEffects": false,
+	"engines": {
+		"node": ">=18"
+	},
+	"packageManager": "pnpm@10.33.0",
 	"scripts": {
 		"build:clean": "rm -rf dist",
 		"build:setup": "mkdir -p dist && cp package.json dist && cp README.md dist && cp LICENSE dist",
 		"build:js": "tsc -p tsconfig.lib.json && find dist/types -type f ! -name '*.ts' -delete",
 		"build": "pnpm build:clean && pnpm build:setup && pnpm build:js",
-		"typecheck": "tsc -p tsconfig.lib.json --noEmit",
+		"lint": "tsc --noEmit && eslint src",
 		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'"
 	},
 	"devDependencies": {
-		"@types/node": "^22.10.1",
-		"typescript": "^5.7.2"
-	},
-	"packageManager": "pnpm@9.14.4"
+		"@eslint/js": "^10.0.1",
+		"@types/node": "^25.5.0",
+		"eslint": "^10.1.0",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-prettier": "^5.5.5",
+		"prettier": "^3.8.1",
+		"typescript": "^6.0.2",
+		"typescript-eslint": "^8.58.0"
+	}
 }

@@ -20,40 +20,40 @@ type NonEmptyObject<T> = T extends object
 		: T
 	: never;
 
-type MayBeOptional<I, O> = I extends undefined ? O | undefined : O;
+type MayBeOptional<I, O> = undefined extends I ? O | undefined : O;
 
-type ItemOrIri<T> = HaveIri<T> extends never
-	? T
-	: MayBeOptional<
-			T,
-			NonEmptyObject<T> extends never
-				? KeepIri<T>
-				: Item<NonEmptyObject<T>, Exclude<GetIri<T>, never>>
-	  >;
+type ItemOrIri<T> =
+	HaveIri<T> extends never
+		? T
+		: MayBeOptional<
+				T,
+				NonEmptyObject<T> extends never
+					? KeepIri<T>
+					: Item<NonEmptyObject<T>, Exclude<GetIri<T>, never>>
+			>;
 
 type DeepPick<T, K extends string> = ItemOrIri<
 	T extends object
 		? NonNullable<T> extends readonly (infer DT)[]
 			? DeepPick<DT, K>[]
 			: GetItem<T> extends never
-			? T
-			: {
-					[P in Head<K> & keyof T]: DeepPick<
-						T[P],
-						Tail<Extract<K, `${P}.${string}`>>
-					>;
-			  }
+				? T
+				: {
+						[P in Head<K> &
+							keyof Omit<T, "@id" | "@type" | "@context">]: DeepPick<
+							T[P & keyof T],
+							Tail<Extract<K, `${P}.${string}`>>
+						>;
+					}
 		: T
 >;
 
-type KeepHydra<In extends object, Out extends object> = In extends Item<
-	unknown,
-	infer I
->
-	? Item<Out, I>
-	: In extends Collection<unknown, infer I>
-	? Collection<Out, I>
-	: Out;
+type KeepHydra<In extends object, Out extends object> =
+	In extends Item<unknown, infer I>
+		? Item<Out, I>
+		: In extends Collection<unknown, infer I>
+			? Collection<Out, I>
+			: Out;
 
 type SafeRoot<T> = T extends Array<infer U> ? U : SafeGetCollectionItem<T>;
 

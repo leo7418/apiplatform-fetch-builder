@@ -8,6 +8,11 @@ export type * from "./types/property-path.ts";
 export type * from "./types/property-value.ts";
 export type * from "./types/response.ts";
 export type * from "./types/utils.ts";
+export type {
+	BuilderConfig,
+	FetchOptions,
+	GetOptions,
+} from "./lib/fetch-builder.ts";
 
 export default fetchBuilder;
 export { entityServiceBuilder };

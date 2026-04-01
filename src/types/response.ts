@@ -10,6 +10,8 @@ type ResponseError<S extends number = number> = {
 	error: Error<S>;
 };
 
-type Response<D = unknown> = ResponseSuccess<D> | ResponseError;
+type Response<D = unknown, S extends number = number> =
+	| ResponseSuccess<D>
+	| ResponseError<S>;
 
 export type { ResponseSuccess, ResponseError, Response };

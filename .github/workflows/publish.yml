@@ -6,7 +6,25 @@ on:
       - v[0-9]*
 
 jobs:
-  build:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "pnpm"
+
+      - run: pnpm install
+
+      - run: pnpm lint && pnpm test
+
+  publish:
+    needs: test
     runs-on: ubuntu-latest
 
     permissions:
@@ -20,8 +38,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.x"
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24.x"
           cache: "pnpm"
 
       - run: pnpm install
@@ -30,6 +47,4 @@ jobs:
         run: pnpm build
 
       - name: Publish to npm
-        run: pnpm publish dist --no-git-checks --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./dist --provenance --access public
