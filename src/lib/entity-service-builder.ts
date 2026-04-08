@@ -48,6 +48,9 @@ type EntityService<
 			body: EntityBody,
 		): Promise<Response<Item<Entity, EntityIri>>>;
 	};
+	upsert: (
+		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
+	) => Promise<Response<Item<Entity, EntityIri>>>;
 	delete: (idOrIri: EntityIri | number) => Promise<Response<null>>;
 };
 
@@ -72,7 +75,7 @@ const entityServiceBuilder = <
 				? fetchBuilder(fetchOptions.entrypoint, fetchOptions.config)
 				: fetchOptions;
 
-	const parseIri = (iriOrId: EntityIri | number) =>
+	const parseIri = (iriOrId: EntityIri | number): EntityIri | string =>
 		typeof iriOrId === "number" ? `${entityPath}/${iriOrId}` : iriOrId;
 
 	const create = (body: EntityBody) =>
@@ -82,33 +85,26 @@ const entityServiceBuilder = <
 		iriOrId: EntityIri | number,
 		getOptions?: GetOptions<Item<Entity, EntityIri>, P>,
 	) => {
-		const get = fetcher.get<Item<Entity, EntityIri>>(parseIri(iriOrId));
-
-		return getOptions ? get.withOptions(getOptions).fetch() : get.fetch();
+		const builder = fetcher.get<Item<Entity, EntityIri>>(parseIri(iriOrId));
+		return getOptions
+			? builder.withOptions(getOptions).fetch()
+			: builder.fetch();
 	};
 
 	const getAll = <P extends PropertyPath<Collection<Entity, EntityIri>>[]>(
 		getOptions?: GetOptions<Collection<Entity, EntityIri>, P>,
 	) => {
-		const get = fetcher.get<Collection<Entity, EntityIri>>(entityPath);
-
-		return getOptions ? get.withOptions(getOptions).fetch() : get.fetch();
+		const builder = fetcher.get<Collection<Entity, EntityIri>>(entityPath);
+		return getOptions
+			? builder.withOptions(getOptions).fetch()
+			: builder.fetch();
 	};
 
-	const update: {
-		(
-			body: ObjectWithId<Partial<EntityBody>, EntityIri>,
-		): Promise<Response<Item<Entity, EntityIri>>>;
-		(
-			idOrIri: EntityIri | number,
-			body: Partial<EntityBody>,
-		): Promise<Response<Item<Entity, EntityIri>>>;
-	} = (
+	const update = (
 		idOrIriOrBody:
 			| ObjectWithId<Partial<EntityBody>, EntityIri>
-			| string
-			| number
-			| EntityIri,
+			| EntityIri
+			| number,
 		maybeBody?: Partial<EntityBody>,
 	): Promise<Response<Item<Entity, EntityIri>>> => {
 		const iri =
@@ -116,7 +112,6 @@ const entityServiceBuilder = <
 				? (idOrIriOrBody["@id"] ?? idOrIriOrBody.id)
 				: idOrIriOrBody;
 		const body = typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!;
-
 		return fetcher
 			.patch<
 				Item<Entity, EntityIri>,
@@ -125,15 +120,7 @@ const entityServiceBuilder = <
 			.fetch(body);
 	};
 
-	const replace: {
-		(
-			body: ObjectWithId<EntityBody, EntityIri>,
-		): Promise<Response<Item<Entity, EntityIri>>>;
-		(
-			idOrIri: EntityIri | number,
-			body: EntityBody,
-		): Promise<Response<Item<Entity, EntityIri>>>;
-	} = (
+	const replace = (
 		idOrIriOrBody: ObjectWithId<EntityBody, EntityIri> | EntityIri | number,
 		maybeBody?: EntityBody,
 	): Promise<Response<Item<Entity, EntityIri>>> => {
@@ -148,17 +135,30 @@ const entityServiceBuilder = <
 			.fetch(body);
 	};
 
+	const upsert = (
+		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
+	): Promise<Response<Item<Entity, EntityIri>>> => {
+		const id =
+			(body as ObjectWithId<Partial<EntityBody>, EntityIri>)["@id"] ??
+			(body as ObjectWithId<Partial<EntityBody>, EntityIri>).id;
+
+		return id
+			? update(body as ObjectWithId<Partial<EntityBody>, EntityIri>)
+			: create(body as EntityBody);
+	};
+
 	const del = (idOrIri: EntityIri | number) =>
 		fetcher.delete(parseIri(idOrIri)).fetch();
 
 	return {
 		create,
-		get: get as EntityService<EntityIri, EntityBody, Entity>["get"],
-		getAll: getAll as EntityService<EntityIri, EntityBody, Entity>["getAll"],
+		get,
+		getAll,
 		update,
 		replace,
+		upsert,
 		delete: del,
-	};
+	} as EntityService<EntityIri, EntityBody, Entity>;
 };
 
 export default entityServiceBuilder;

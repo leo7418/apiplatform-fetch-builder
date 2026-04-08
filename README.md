@@ -4,149 +4,244 @@
 [![npm downloads](https://img.shields.io/npm/dm/apiplatform-fetch-builder.svg)](https://www.npmjs.com/package/apiplatform-fetch-builder)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-**apiplatform-fetch-builder** is a TypeScript library designed to simplify and streamline interactions with [ApiPlatform](https://api-platform.com/) / Hydra APIs. It provides a builder-pattern interface for making typed `fetch` requests, handling pagination, sorting, filtering, property selection, and includes an optional `entityServiceBuilder` for more advanced resource CRUD operations with type safety.
+**apiplatform-fetch-builder** is a TypeScript library for interacting with [ApiPlatform](https://api-platform.com/) / Hydra APIs. It provides a builder-pattern interface for typed `fetch` requests with pagination, sorting, filtering, and property selection — plus an optional `entityServiceBuilder` for full CRUD with typed IRIs.
 
 ## Features
-- **Typed `fetch` requests**  
-- **Builder-pattern interface** (pagination, sorting, filtering, property selection)  
-- **Hydra & ApiPlatform compatibility**  
-- **Optional `entityServiceBuilder`** for CRUD (Create, Read, Update, Delete) operations with typed IRIs  
-- **No bundler required**
+
+- **Typed requests** — full TypeScript generics on responses
+- **Builder pattern** — chainable `.withOptions()`, `.withHeaders()`
+- **Hydra & ApiPlatform compatible** — pagination, sorting, filtering, property selection
+- **`entityServiceBuilder`** — typed CRUD: `create`, `get`, `getAll`, `update`, `replace`, `upsert`, `delete`
+- **Security** — token validation, safe key assertions on filter/sort ids
+- **No bundler required** — pure ESM
 
 ## Installation
 
 ```bash
-npm install apiplatform-fetch-builder
-# or
-yarn add apiplatform-fetch-builder
-# or
 pnpm add apiplatform-fetch-builder
 ```
 
-## Quick Usage Example
+## Quick start
 
 ```ts
-import builder from "apiplatform-fetch-builder";
+import fetchBuilder from "apiplatform-fetch-builder";
 
-const api = builder("https://api.example.com", {
-  getToken: async () => "your_jwt_token_here",
-  onUnauthorized: async () => {
-    console.log("Unauthorized! Redirecting to login...");
-  },
+const api = fetchBuilder("https://api.example.com", {
+  getToken: () => localStorage.getItem("token"),
+  onUnauthorized: () => router.push("/login"),
 });
 
-// Simple GET
-const result = await api.get<{ items: { id: number; name: string }[] }>("/items").fetch();
-
+// GET
+const result = await api.get<{ name: string }>("/users/1").fetch();
 if (result.success) {
-  console.log("Fetched items:", result.data.items);
-} else {
-  console.error("Failed to fetch items:", result.error);
+  console.log(result.data.name);
 }
 
-// GET with pagination, sorting, filtering, and property selection
-const getOptions = {
-  pagination: true,
-  pageIndex: 0,
-  pageSize: 20,
-  sortBy: [{ id: "name", desc: false }],
-  filters: [{ id: "category", value: "books" }],
-  properties: ["id", "name"] as const,
-};
-
-const paginatedResult = await api
-  .get<{ items: { id: number; name: string }[] }>("/items")
-  .withOptions(getOptions)
+// GET with options
+const list = await api
+  .get<Collection<User>>("/users")
+  .withOptions({
+    pagination: true,
+    pageIndex: 0,
+    pageSize: 20,
+    sortBy: [{ id: "name", desc: false }],
+    filters: [{ id: "status", value: "active" }],
+    properties: ["name", "email"],
+  })
   .fetch();
 
-if (paginatedResult.success) {
-  console.log("Paginated items:", paginatedResult.data.items);
-}
+// POST
+const created = await api.post<User, UserBody>("/users").fetch({ name: "Alice" });
+
+// PATCH
+const updated = await api.patch<User, Partial<UserBody>>("/users/1").fetch({ name: "Bob" });
+
+// PUT
+const replaced = await api.put<User, UserBody>("/users/1").fetch({ name: "Carol" });
+
+// DELETE
+const deleted = await api.delete("/users/1").fetch();
+
+// Custom headers (chainable)
+const result2 = await api
+  .get<User>("/users/1")
+  .withHeaders({ "X-Tenant": "acme" })
+  .fetch();
+
+// withHeaders after withOptions
+const result3 = await api
+  .get<Collection<User>>("/users")
+  .withOptions({ pagination: false })
+  .withHeaders({ "X-Tenant": "acme" })
+  .fetch();
+
+// Pre-configure body with withBody (POST/PATCH/PUT)
+const builder = api.post<User, UserBody>("/users").withBody({ name: "Alice" });
+const created2 = await builder.fetch(); // no body argument needed
+
+// Cancel a request with AbortSignal
+const controller = new AbortController();
+const result4 = await api.get<User>("/users/1").fetch({ signal: controller.signal });
+controller.abort(); // cancels in-flight request
+
+// Clone a fetcher with config overrides
+const tenantApi = api.clone({ getToken: () => getTenantToken() });
 ```
 
-## Using `entityServiceBuilder`
+## `entityServiceBuilder`
+
+Higher-level CRUD abstraction over `fetchBuilder` for a specific resource path.
 
 ```ts
-import fetchBuilder, { entityServiceBuilder } from "apiplatform-fetch-builder";
-import type { Company, CompanyBody, CompanyIri } from "./types/company";
+import { entityServiceBuilder } from "apiplatform-fetch-builder";
+import type { Iri } from "apiplatform-fetch-builder";
 
-// Create a typed service builder
-const companyService = entityServiceBuilder<CompanyIri, CompanyBody, Company>(
-  fetchBuilder("https://api.example.com"), 
-  "/companies"
+type UserIri = Iri<"users">;
+type UserBody = { name: string; email: string };
+type User = UserBody & { createdAt: string };
+
+const userService = entityServiceBuilder<UserIri, UserBody, User>(
+  fetchBuilder("https://api.example.com", { getToken }),
+  "/users"
 );
 
-// GET collection with options
-const companiesResult = await companyService.getAll({
+// Create — builder: .fetch(body), .withBody(body), .withHeaders(h)
+const created = await userService.create.fetch({ name: "Alice", email: "alice@example.com" });
+const created2 = await userService.create.withHeaders({ "X-Tenant": "acme" }).fetch({ name: "Alice", email: "alice@example.com" });
+const created3 = await userService.create.withBody({ name: "Alice", email: "alice@example.com" }).fetch();
+
+// Get by id or IRI
+const user = await userService.get(1);
+const user2 = await userService.get("/users/1");
+
+// Get with property selection
+const partial = await userService.get(1, { properties: ["name"] });
+
+// Get collection
+const all = await userService.getAll();
+const filtered = await userService.getAll({
   pagination: true,
-  pageIndex: 1,
+  pageIndex: 0,
   pageSize: 10,
   sortBy: [{ id: "name", desc: false }],
-  properties: ["name", "description", "ceo", "employees.id"] as const,
 });
 
-if (companiesResult.success) {
-  console.log("Companies:", companiesResult.data["hydra:member"]);
-}
+// Update (PATCH) — by id, IRI, or body with @id / id — returns builder
+await userService.update(1).fetch({ name: "Bob" });
+await userService.update("/users/1").fetch({ name: "Bob" });
+await userService.update({ "@id": "/users/1", name: "Bob" }).fetch({ name: "Bob" });
 
-// GET single item
-const companyResult = await companyService.get(1);
-if (companyResult.success) {
-  console.log("Company:", companyResult.data);
-}
+// Replace (PUT) — same pattern
+await userService.replace(1).fetch({ name: "Carol", email: "carol@example.com" });
+await userService.replace("/users/1").fetch({ name: "Carol", email: "carol@example.com" });
 
-// CREATE new item
-const createResult = await companyService.create({
-  name: "New Company",
-  description: "We build new things",
-});
-if (createResult.success) {
-  console.log("Created company:", createResult.data);
-}
+// Upsert — create if no id, update if @id or id present
+await userService.upsert({ name: "Dave", email: "dave@example.com" }); // → POST
+await userService.upsert({ "@id": "/users/1", name: "Dave" });          // → PATCH
+
+// Delete
+await userService.delete(1);
+await userService.delete("/users/1");
 ```
 
-## API
+### `entityServiceBuilder` initialization
 
-### `builder(entrypoint: string, config?: BuilderConfig)`
+Accepts three forms:
 
-**Parameters:**
-- `entrypoint: string`: Base URL of your API (e.g., `"https://api.example.com"`).
-- `config?: BuilderConfig`: Optional config object.
-  - `getToken?: () => string | null | Promise<string | null>`  
-  - `onUnauthorized?: () => void | Promise<void>`
+```ts
+// From a fetcher instance (recommended — share across services)
+entityServiceBuilder(fetchBuilder("https://api.example.com", config), "/users")
 
-**Returns:** An object with methods `get`, `post`, `patch`, `put`, and `delete`.
+// From an entrypoint string
+entityServiceBuilder("https://api.example.com", "/users")
+
+// From an entrypoint + config object
+entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users")
+```
+
+## API reference
+
+### `fetchBuilder(entrypoint, config?)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entrypoint` | `string` | Base URL of the API |
+| `config.getToken` | `() => string \| null \| Promise<string \| null>` | Returns the Bearer token |
+| `config.refreshToken` | `() => string \| null \| Promise<string \| null>` | Called on 401 — retries the request with the new token before `onUnauthorized` |
+| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after retry (or immediately if no `refreshToken`) |
+
+Returns `{ get, post, patch, put, delete, clone }`.
+
+### `clone(overrides?)`
+
+Returns a new fetcher with the same `entrypoint` and config merged with `overrides`. Useful for per-tenant or per-user token overrides without recreating the full builder.
+
+```ts
+const tenantApi = api.clone({ getToken: () => getTenantToken() });
+```
 
 ---
 
-### `get(url: string)`
+### `get(url)`
 
-Returns an object with:
-- `fetch(options?: FetchOptions)`: Performs a GET request.
-- `withOptions(getOptions: GetOptions)`: Applies pagination, sorting, filtering, property selection.
+| Method | Description |
+|--------|-------------|
+| `.fetch(options?)` | Performs the GET request |
+| `.withOptions(getOptions)` | Adds pagination, sorting, filtering, property selection |
+| `.withHeaders(headers)` | Merges custom headers (chainable, also available after `.withOptions()`) |
 
-### `post(url: string)`, `patch(url: string)`, `put(url: string)`, `delete(url: string)`
+### `post(url)`, `patch(url)`, `put(url)`
 
-Similar to `get` but for respective HTTP methods. `post`, `patch`, and `put` accept a request body. `delete` returns `null` data on success.
+| Method | Description |
+|--------|-------------|
+| `.fetch(body, options?)` | Performs the request with body |
+| `.withBody(body)` | Pre-configures the body — returns a builder where `.fetch()` takes no body argument |
+| `.withHeaders(headers)` | Merges custom headers (chainable after `.withBody()`) |
+
+### `AbortSignal`
+
+All `.fetch()` methods accept a standard `RequestInit` `signal` option:
+
+```ts
+const controller = new AbortController();
+const result = await api.get<User>("/users/1").fetch({ signal: controller.signal });
+controller.abort();
+```
+
+### `delete(url)`
+
+| Method | Description |
+|--------|-------------|
+| `.fetch(options?)` | Performs the DELETE request, returns `null` data |
+| `.withHeaders(headers)` | Merges custom headers |
 
 ---
 
-### `entityServiceBuilder(...)`
+### `GetOptions`
 
-**Parameters:**
-- Generic type parameters: `<IriType, BodyType, EntityType>`
-- Accepts a fetcher (from `builder(...)`) or a string/entrypoint object.
-- `entityPath: string` for the resource (e.g. `"/companies"`).
-
-**Returns:**  
-An object with methods: `create`, `get`, `getAll`, `update`, `replace`, `delete`.
+| Field | Type | Description |
+|-------|------|-------------|
+| `pagination` | `boolean` | Default `true` |
+| `pageIndex` | `number` | 0-based page index |
+| `pageSize` | `number` | Items per page, default `10` |
+| `sortBy` | `{ id: PropertyPath, desc: boolean }[]` | Sort fields (type-safe) |
+| `filters` | `{ id: PropertyPath, value: ... }[]` | Filter fields (type-safe) |
+| `properties` | `PropertyPath[]` | Partial response selection |
 
 ---
 
-## Contributing
+### `entityServiceBuilder` methods
 
-Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/leo7418/apiplatform-fetch-builder).
+| Method | Description |
+|--------|-------------|
+| `create` | Builder — `.fetch(body)`, `.withBody(body)`, `.withHeaders(h)` |
+| `get(idOrIri, options?)` | GET — fetches a single resource |
+| `getAll(options?)` | GET — fetches the collection |
+| `update(idOrIri)` or `update(bodyWithId)` | Returns a PATCH builder — `.fetch(body)`, `.withHeaders(h)` |
+| `replace(idOrIri)` or `replace(bodyWithId)` | Returns a PUT builder — `.fetch(body)`, `.withHeaders(h)` |
+| `upsert(body)` | POST if no id, PATCH if `@id` or `id` present |
+| `delete(idOrIri)` | DELETE |
 
 ## License
 
-Licensed under the [MIT License](./LICENSE).
+[MIT](./LICENSE)

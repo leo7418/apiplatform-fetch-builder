@@ -12,53 +12,50 @@ type EntityBody = { name: string };
 type Entity = EntityBody & { calculatedName?: string };
 
 const getToken = () => "some-complex-token";
-const onUnauthorized = mock.fn();
-
-const fetcher = fetchBuilder("https://example.com", {
-	getToken,
-	onUnauthorized,
-});
-
 const entityPath = "/entities";
-const entityService = entityServiceBuilder<EntityIri, EntityBody, Entity>(
-	fetcher,
-	entityPath,
-);
+
+const makeService = () => {
+	const fetcher = fetchBuilder("https://example.com", {
+		getToken,
+		onUnauthorized: mock.fn() as () => void,
+	});
+	const entityService = entityServiceBuilder<EntityIri, EntityBody, Entity>(
+		fetcher,
+		entityPath,
+	);
+	return { fetcher, entityService };
+};
+
+const makeItem = (id: number, name: string): Item<Entity, EntityIri> => ({
+	"@context": "/contexts/Entity",
+	"@type": "Entity",
+	"@id": `/entities/${id}`,
+	name,
+});
 
 describe("entityServiceBuilder", () => {
 	test("should create an entity", async () => {
+		const { entityService } = makeService();
 		const body: EntityBody = { name: "Test Entity" };
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": "/entities/1",
-			name: "Test Entity",
-		};
+		const response = makeItem(1, "Test Entity");
 
-		const postMocked = mock.fn(
-			fetcher.post<Item<Entity, EntityIri>, EntityBody>,
-		);
-		postMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.post = postMocked as unknown as typeof fetcher.post;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}`);
+			assert.equal(init?.method, "POST");
+			assert.deepEqual(JSON.parse(init?.body as string), body);
+			return new Response(JSON.stringify(response), { status: 201 });
+		};
 
 		const result = await entityService.create(body);
 
-		assert.strictEqual(postMocked.mock.callCount(), 1);
-		assert.strictEqual(postMocked.mock.calls[0].arguments[0], entityPath);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
 	test("should get an entity by Iri", async () => {
+		const { fetcher, entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": iri,
-			name: "Test Entity",
-		};
+		const response = makeItem(1, "Test Entity");
 
 		const getMocked = mock.fn(fetcher.get<Item<Entity, EntityIri>>);
 		getMocked.mock.mockImplementationOnce(
@@ -80,10 +77,11 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should get an entity by id with options", async () => {
+		const { fetcher, entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
 		const response: Omit<Item<Entity, EntityIri>, "name"> = {
-			"@context": "",
-			"@type": "",
+			"@context": "/contexts/Entity",
+			"@type": "Entity",
 			"@id": iri,
 			calculatedName: "Test Entity",
 		};
@@ -129,18 +127,12 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should get all entities", async () => {
+		const { fetcher, entityService } = makeService();
 		const response: Collection<Entity, EntityIri> = {
 			"@context": "",
 			"@type": "hydra:Collection",
 			"@id": "/entities/1",
-			"hydra:member": [
-				{
-					"@context": "",
-					"@type": "",
-					"@id": "/entities/1",
-					name: "Test Entity",
-				},
-			],
+			"hydra:member": [makeItem(1, "Test Entity")],
 			"hydra:totalItems": 1,
 		};
 
@@ -164,13 +156,13 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should get all entities with options", async () => {
+		const { fetcher, entityService } = makeService();
 		const response: Collection<Entity, EntityIri> = {
 			"@context": "",
 			"@type": "hydra:Collection",
 			"@id": "/entities/1",
 			"hydra:member": [
 				{
-					"@context": "",
 					"@type": "",
 					"@id": "/entities/1",
 					calculatedName: "Test Entity",
@@ -220,186 +212,184 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should update an entity by Iri", async () => {
+		const { entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
 		const body = { name: "Updated Entity" };
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": iri,
-			name: "Updated Entity",
-		};
+		const response = makeItem(1, "Updated Entity");
 
-		const patchMocked = mock.fn(
-			fetcher.patch<Item<Entity, EntityIri>, EntityBody>,
-		);
-		patchMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.patch = patchMocked as unknown as typeof fetcher.patch;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${iri}`);
+			assert.equal(init?.method, "PATCH");
+			assert.deepEqual(JSON.parse(init?.body as string), body);
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
 
 		const result = await entityService.update(iri, body);
 
-		assert.strictEqual(patchMocked.mock.callCount(), 1);
-		assert.strictEqual(
-			patchMocked.mock.calls[0].arguments[0],
-			`${entityPath}/1`,
-		);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
 	test("should update an entity by id", async () => {
+		const { entityService } = makeService();
 		const id = 1;
 		const body = { name: "Updated Entity" };
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": `/entities/${id}`,
-			name: "Updated Entity",
-		};
+		const response = makeItem(id, "Updated Entity");
 
-		const patchMocked = mock.fn(
-			fetcher.patch<Item<Entity, EntityIri>, EntityBody>,
-		);
-		patchMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.patch = patchMocked as unknown as typeof fetcher.patch;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/${id}`);
+			assert.equal(init?.method, "PATCH");
+			assert.deepEqual(JSON.parse(init?.body as string), body);
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
 
 		const result = await entityService.update(id, body);
 
-		assert.strictEqual(patchMocked.mock.callCount(), 1);
-		assert.strictEqual(
-			patchMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`,
-		);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
-	test("should update an entity by id in the body", async () => {
+	test("should update an entity by body with @id", async () => {
+		const { entityService } = makeService();
 		const id = 1;
-		const body = { "@id": `/entities/${id}`, name: "Updated Entity" } as const;
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": `/entities/${id}`,
+		const bodyWithId = {
+			"@id": `/entities/${id}` as EntityIri,
 			name: "Updated Entity",
 		};
+		const response = makeItem(id, "Updated Entity");
 
-		const patchMocked = mock.fn(
-			fetcher.patch<Item<Entity, EntityIri>, EntityBody>,
-		);
-		patchMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.patch = patchMocked as unknown as typeof fetcher.patch;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/${id}`);
+			assert.equal(init?.method, "PATCH");
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
 
-		const result = await entityService.update(body);
+		const result = await entityService.update(bodyWithId);
 
-		assert.strictEqual(patchMocked.mock.callCount(), 1);
-		assert.strictEqual(
-			patchMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`,
-		);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
 	test("should replace an entity by Iri", async () => {
+		const { entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
-		const body = { name: "Updated Entity" };
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": iri,
-			name: "Updated Entity",
-		};
+		const body: EntityBody = { name: "Updated Entity" };
+		const response = makeItem(1, "Updated Entity");
 
-		const putMocked = mock.fn(fetcher.put<Item<Entity, EntityIri>, EntityBody>);
-		putMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.put = putMocked as unknown as typeof fetcher.put;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${iri}`);
+			assert.equal(init?.method, "PUT");
+			assert.deepEqual(JSON.parse(init?.body as string), body);
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
 
 		const result = await entityService.replace(iri, body);
 
-		assert.strictEqual(putMocked.mock.callCount(), 1);
-		assert.strictEqual(putMocked.mock.calls[0].arguments[0], `${entityPath}/1`);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
 	test("should replace an entity by id", async () => {
+		const { entityService } = makeService();
 		const id = 1;
-		const body = { name: "Updated Entity" };
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": `/entities/${id}`,
-			name: "Updated Entity",
-		};
+		const body: EntityBody = { name: "Updated Entity" };
+		const response = makeItem(id, "Updated Entity");
 
-		const putMocked = mock.fn(fetcher.put<Item<Entity, EntityIri>, EntityBody>);
-		putMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.put = putMocked as unknown as typeof fetcher.put;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/${id}`);
+			assert.equal(init?.method, "PUT");
+			assert.deepEqual(JSON.parse(init?.body as string), body);
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
 
 		const result = await entityService.replace(id, body);
 
-		assert.strictEqual(putMocked.mock.callCount(), 1);
-		assert.strictEqual(
-			putMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`,
-		);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
 	});
 
-	test("should replace an entity by id in the body", async () => {
+	test("should replace an entity by body with @id", async () => {
+		const { entityService } = makeService();
 		const id = 1;
-		const body = { "@id": `/entities/${id}`, name: "Updated Entity" } as const;
-		const response: Item<Entity, EntityIri> = {
-			"@context": "",
-			"@type": "",
-			"@id": `/entities/${id}`,
+		const bodyWithId = {
+			"@id": `/entities/${id}` as EntityIri,
 			name: "Updated Entity",
 		};
+		const response = makeItem(id, "Updated Entity");
 
-		const putMocked = mock.fn(fetcher.put<Item<Entity, EntityIri>, EntityBody>);
-		putMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: response }),
-		}));
-		fetcher.put = putMocked as unknown as typeof fetcher.put;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/${id}`);
+			assert.equal(init?.method, "PUT");
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
 
-		const result = await entityService.replace(body);
+		const result = await entityService.replace(bodyWithId);
 
-		assert.strictEqual(putMocked.mock.callCount(), 1);
-		assert.strictEqual(
-			putMocked.mock.calls[0].arguments[0],
-			`${entityPath}/${id}`,
-		);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, response);
+	});
+
+	test("upsert: should call create when body has no id", async () => {
+		const { entityService } = makeService();
+		const body: EntityBody = { name: "New Entity" };
+		const response = makeItem(1, "New Entity");
+
+		global.fetch = async (_input, init) => {
+			assert.equal(init?.method, "POST");
+			return new Response(JSON.stringify(response), { status: 201 });
+		};
+
+		const result = await entityService.upsert(body);
+
+		assert.ok(result.success);
+		assert.deepStrictEqual(result.data, response);
+	});
+
+	test("upsert: should call update when body has @id", async () => {
+		const { entityService } = makeService();
+		const body = { "@id": "/entities/1" as EntityIri, name: "Updated Entity" };
+		const response = makeItem(1, "Updated Entity");
+
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/1`);
+			assert.equal(init?.method, "PATCH");
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
+
+		const result = await entityService.upsert(body);
+
+		assert.ok(result.success);
+		assert.deepStrictEqual(result.data, response);
+	});
+
+	test("upsert: should call update when body has numeric id", async () => {
+		const { entityService } = makeService();
+		const body = { id: 1, name: "Updated Entity" };
+		const response = makeItem(1, "Updated Entity");
+
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/1`);
+			assert.equal(init?.method, "PATCH");
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
+
+		const result = await entityService.upsert(body);
+
+		assert.ok(result.success);
 	});
 
 	test("should delete an entity by Iri", async () => {
+		const { entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
 
-		const deleteMocked = mock.fn(fetcher.delete);
-		deleteMocked.mock.mockImplementationOnce(() => ({
-			fetch: async () => ({ success: true, data: null }),
-		}));
-		fetcher.delete = deleteMocked as unknown as typeof fetcher.delete;
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${iri}`);
+			assert.equal(init?.method, "DELETE");
+			return new Response(null, { status: 204 });
+		};
 
 		const result = await entityService.delete(iri);
 
-		assert.strictEqual(deleteMocked.mock.callCount(), 1);
-		assert.strictEqual(
-			deleteMocked.mock.calls[0].arguments[0],
-			`${entityPath}/1`,
-		);
 		assert.ok(result.success);
 		assert.deepStrictEqual(result.data, null);
 	});

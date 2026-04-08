@@ -33,9 +33,7 @@ type HydraNestedKeyOf<T, Depth extends number = 3> = HydraNestedKeyOfInner<
 
 type SafeRoot<T> = T extends Array<infer U> ? U : SafeGetCollectionItem<T>;
 
-type PropertyPath<T> = SecureType<
+export type PropertyPath<T> = SecureType<
 	Simplify<HydraNestedKeyOf<SafeRoot<T>>>,
 	string
 >;
-
-export type { PropertyPath };

@@ -1,11 +1,11 @@
 import type { Iri } from "./iri.ts";
 import type { Item } from "./item.ts";
 
-type Collection<T, I extends Iri<string> = Iri<string>> = {
+export type Collection<T, I extends Iri<string> = Iri<string>> = {
 	"@context": string;
 	"@id": string;
 	"@type": "hydra:Collection";
-	"hydra:member": Item<T, I>[];
+	"hydra:member": Omit<Item<T, I>, "@context">[];
 	"hydra:totalItems": number;
 	"hydra:view"?: {
 		"@id": string;
@@ -33,5 +33,3 @@ export type GetCollectionItem<C> =
 
 export type SafeGetCollectionItem<T> =
 	GetCollectionItem<T> extends never ? T : GetCollectionItem<T>;
-
-export type { Collection };

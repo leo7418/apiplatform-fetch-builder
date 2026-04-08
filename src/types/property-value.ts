@@ -57,11 +57,12 @@ type KeepHydra<In extends object, Out extends object> =
 
 type SafeRoot<T> = T extends Array<infer U> ? U : SafeGetCollectionItem<T>;
 
-type PropertyValue<T extends object, P extends PropertyPath<T>> = Simplify<
+export type PropertyValue<
+	T extends object,
+	P extends PropertyPath<T>,
+> = Simplify<
 	KeepHydra<
 		T,
 		SecureType<UnionToIntersection<DeepPick<SafeRoot<T>, P>>, object>
 	>
 >;
-
-export type { PropertyValue };

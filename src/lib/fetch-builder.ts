@@ -8,16 +8,35 @@ type FetchMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
 export type FetchOptions<In = never> = Omit<RequestInit, "method" | "body"> & {
 	body?: In;
-	searchParams?: URLSearchParams;
+};
+
+type AnyGetOptions = {
+	pagination?: boolean;
+	pageIndex?: number;
+	pageSize?: number;
+	sortBy?: { id: string; desc: boolean }[];
+	filters?: {
+		id: string;
+		value:
+			| Date
+			| string
+			| number
+			| (string | number)[]
+			| Record<string | number, string | number>;
+	}[];
+	properties?: string[];
 };
 
 export type GetOptions<
 	Out extends object,
 	P extends PropertyPath<Out>[] | undefined,
 > = {
-	sortBy?: { id: string; desc: boolean }[];
+	sortBy?: {
+		id: [PropertyPath<Out>] extends [never] ? string : PropertyPath<Out>;
+		desc: boolean;
+	}[];
 	filters?: {
-		id: string;
+		id: [PropertyPath<Out>] extends [never] ? string : PropertyPath<Out>;
 		value:
 			| Date
 			| string
@@ -41,6 +60,7 @@ export type GetOptions<
 
 export type BuilderConfig = {
 	getToken?: () => string | null | Promise<string | null>;
+	refreshToken?: () => string | null | Promise<string | null>;
 	onUnauthorized?: () => void | Promise<void>;
 };
 
@@ -50,21 +70,10 @@ const assertSafeKey = (key: string, context: string) => {
 	}
 };
 
-type AnyGetOptions = {
-	pagination?: boolean;
-	pageIndex?: number;
-	pageSize?: number;
-	sortBy?: { id: string; desc: boolean }[];
-	filters?: {
-		id: string;
-		value:
-			| Date
-			| string
-			| number
-			| (string | number)[]
-			| Record<string | number, string | number>;
-	}[];
-	properties?: string[];
+const assertSafeToken = (token: string | null) => {
+	if (token !== null && (token === "" || /\s/.test(token))) {
+		throw new TypeError("Invalid Bearer token");
+	}
 };
 
 const buildGetOptions = ({
@@ -135,20 +144,15 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		return url.toString();
 	};
 
-	const request = async <Out extends object | null, In = never>(
+	const doFetch = async <In = never>(
 		url: string,
 		method: FetchMethod,
-		options: FetchOptions<In> = {},
-	): Promise<Response<Out>> => {
+		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
+		token: string | null,
+	): Promise<globalThis.Response> => {
 		const { body, headers, searchParams, ...restOptions } = options;
 
-		const rawToken = await (config.getToken?.() ?? Promise.resolve(null));
-		const token = rawToken || null;
-		if (token && /\s/.test(token)) {
-			throw new TypeError("Invalid Bearer token");
-		}
-
-		const response = await fetch(buildURL(url, searchParams), {
+		return fetch(buildURL(url, searchParams), {
 			method,
 			headers: {
 				...(body instanceof FormData
@@ -170,6 +174,23 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 				: undefined,
 			...restOptions,
 		});
+	};
+
+	const request = async <Out extends object | null, In = never>(
+		url: string,
+		method: FetchMethod,
+		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
+	): Promise<Response<Out>> => {
+		const token = (await config.getToken?.()) ?? null;
+		assertSafeToken(token);
+
+		let response = await doFetch<In>(url, method, options, token);
+
+		if (response.status === 401 && config.refreshToken) {
+			const newToken = (await config.refreshToken()) ?? null;
+			assertSafeToken(newToken);
+			response = await doFetch<In>(url, method, options, newToken);
+		}
 
 		if (!response.ok) {
 			if (response.status === 401) {
@@ -187,39 +208,109 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		return { success: true, data };
 	};
 
-	const get = <Out extends object>(url: string) => ({
-		fetch: (options?: FetchOptions) => request<Out>(url, "GET", options),
+	const get = <Out extends object>(
+		url: string,
+		headers?: Record<string, string>,
+	) => ({
+		fetch: (options?: FetchOptions) =>
+			request<Out>(url, "GET", {
+				...options,
+				headers: {
+					...headers,
+					...(options?.headers as Record<string, string> | undefined),
+				},
+			}),
+		withHeaders: (h: HeadersInit) =>
+			get<Out>(url, { ...headers, ...(h as Record<string, string>) }),
 		withOptions: <P extends PropertyPath<Out>[]>(
 			getOptions: GetOptions<Out, P>,
 		) => ({
 			fetch: (options?: FetchOptions) =>
 				request<PropertyValue<Out, P[number]>>(url, "GET", {
 					...options,
+					headers: {
+						...headers,
+						...(options?.headers as Record<string, string> | undefined),
+					},
 					searchParams: buildGetOptions(getOptions as AnyGetOptions),
 				}),
+			withHeaders: (h: HeadersInit) =>
+				get<Out>(url, {
+					...headers,
+					...(h as Record<string, string>),
+				}).withOptions(getOptions),
 		}),
 	});
 
-	const post = <Out extends object, In>(url: string) => ({
+	const makeMutationBuilder = <Out extends object, In>(
+		method: "POST" | "PATCH" | "PUT",
+		url: string,
+		headers?: Record<string, string>,
+	) => ({
 		fetch: (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, "POST", { ...options, body }),
+			request<Out, In>(url, method, {
+				...options,
+				headers: {
+					...headers,
+					...(options?.headers as Record<string, string> | undefined),
+				},
+				body,
+			}),
+		withHeaders: (h: HeadersInit) =>
+			makeMutationBuilder<Out, In>(method, url, {
+				...headers,
+				...(h as Record<string, string>),
+			}),
+		withBody: (b: In) => ({
+			fetch: (options?: FetchOptions<In>) =>
+				request<Out, In>(url, method, {
+					...options,
+					headers: {
+						...headers,
+						...(options?.headers as Record<string, string> | undefined),
+					},
+					body: b,
+				}),
+			withHeaders: (h: HeadersInit) =>
+				makeMutationBuilder<Out, In>(method, url, {
+					...headers,
+					...(h as Record<string, string>),
+				}).withBody(b),
+		}),
 	});
 
-	const patch = <Out extends object, In>(url: string) => ({
-		fetch: (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, "PATCH", { ...options, body }),
+	const post = <Out extends object, In>(
+		url: string,
+		headers?: Record<string, string>,
+	) => makeMutationBuilder<Out, In>("POST", url, headers);
+
+	const patch = <Out extends object, In>(
+		url: string,
+		headers?: Record<string, string>,
+	) => makeMutationBuilder<Out, In>("PATCH", url, headers);
+
+	const put = <Out extends object, In>(
+		url: string,
+		headers?: Record<string, string>,
+	) => makeMutationBuilder<Out, In>("PUT", url, headers);
+
+	const del = (url: string, headers?: Record<string, string>) => ({
+		fetch: (options?: FetchOptions) =>
+			request<null>(url, "DELETE", {
+				...options,
+				headers: {
+					...headers,
+					...(options?.headers as Record<string, string> | undefined),
+				},
+			}),
+		withHeaders: (h: HeadersInit) =>
+			del(url, { ...headers, ...(h as Record<string, string>) }),
 	});
 
-	const put = <Out extends object, In>(url: string) => ({
-		fetch: (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, "PUT", { ...options, body }),
-	});
+	const clone = (overrides: Partial<BuilderConfig> = {}) =>
+		fetchBuilder(entrypoint, { ...config, ...overrides });
 
-	const del = (url: string) => ({
-		fetch: (options?: FetchOptions) => request<null>(url, "DELETE", options),
-	});
-
-	return { get, post, patch, put, delete: del };
+	return { get, post, patch, put, delete: del, clone };
 };
 
 export default fetchBuilder;

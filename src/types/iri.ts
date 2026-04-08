@@ -1,4 +1,4 @@
-type Iri<I extends string> = `/${I}/${number}`;
+export type Iri<I extends string> = `/${I}/${number}`;
 
 export type GetIri<I> = I extends `/${infer S}/${infer N}`
 	? S extends string
@@ -7,5 +7,3 @@ export type GetIri<I> = I extends `/${infer S}/${infer N}`
 			: never
 		: never
 	: never;
-
-export type { Iri };

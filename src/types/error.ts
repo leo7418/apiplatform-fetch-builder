@@ -1,4 +1,4 @@
-type Error<S extends number> = {
+export type Error<S extends number> = {
 	"@id": `/errors/${S}`;
 	"@type": "hydra:Error";
 	detail: string;
@@ -20,5 +20,3 @@ type Error<S extends number> = {
 		code: string;
 	}[];
 };
-
-export type { Error };
