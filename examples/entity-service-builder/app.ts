@@ -10,7 +10,7 @@ const companyServiceBuilder = entityServiceBuilder<
 
 const companiesService = companyServiceBuilder(
 	fetchBuilder("https://your-api.com"),
-	"/companies"
+	"/companies",
 );
 
 /* OR
@@ -64,3 +64,33 @@ if (companyResult.success) {
 } else {
 	console.error(companyResult.error);
 }
+
+// Fetch all companies across all pages
+const allCompanies = await companiesService.getAllPages();
+console.log(`Fetched ${allCompanies["hydra:totalItems"]} companies`);
+
+// With filters and sorting
+const allActive = await companiesService.getAllPages({
+	sortBy: [{ id: "name", desc: false }],
+	pageSize: 50,
+});
+console.log(`Fetched ${allActive["hydra:totalItems"]} companies`);
+
+// With progress reporting — return false to stop early
+const partial = await companiesService.getAllPages(
+	({ page, fetchedItems, totalItems, progressPercent }) => {
+		console.log(
+			`Page ${page}: ${fetchedItems}/${totalItems} (${progressPercent}%)`,
+		);
+		// Stop if there are too many results
+		if (totalItems !== undefined && totalItems > 10000) return false;
+	},
+);
+console.log(`Fetched ${partial["hydra:totalItems"]} companies`);
+
+// With both getOptions and onProgress
+const filtered = await companiesService.getAllPages(
+	{ sortBy: [{ id: "name", desc: false }], pageSize: 100 },
+	({ progressPercent }) => console.log(`${progressPercent}%`),
+);
+console.log(`Fetched ${filtered["hydra:totalItems"]} companies`);

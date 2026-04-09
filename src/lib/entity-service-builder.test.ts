@@ -378,6 +378,134 @@ describe("entityServiceBuilder", () => {
 		assert.ok(result.success);
 	});
 
+	test("getAllPages: should return empty collection when totalItems is 0", async () => {
+		const { entityService } = makeService();
+
+		global.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "hydra:Collection",
+					"@id": entityPath,
+					"hydra:member": [],
+					"hydra:totalItems": 0,
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+
+		const result = await entityService.getAllPages();
+
+		assert.deepStrictEqual(result["hydra:member"], []);
+		assert.strictEqual(result["hydra:totalItems"], 0);
+	});
+
+	test("getAllPages: should fetch all pages and concatenate members", async () => {
+		const { entityService } = makeService();
+		const allMembers = [makeItem(1, "A"), makeItem(2, "B"), makeItem(3, "C")];
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			// callCount 1 = probe (1 item), callCount 2 = full page
+			const members = callCount === 1 ? [allMembers[0]] : allMembers;
+			return new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "hydra:Collection",
+					"@id": entityPath,
+					"hydra:member": members,
+					"hydra:totalItems": 3,
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.strictEqual(result["hydra:totalItems"], 3);
+		assert.strictEqual(result["hydra:member"].length, 3);
+	});
+
+	test("getAllPages: should stop at probe when onProgress returns false on page 0", async () => {
+		const { entityService } = makeService();
+
+		global.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "hydra:Collection",
+					"@id": entityPath,
+					"hydra:member": [makeItem(1, "A")],
+					"hydra:totalItems": 10,
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+
+		const result = await entityService.getAllPages(({ page }) =>
+			page === 0 ? false : undefined,
+		);
+
+		assert.strictEqual(result["hydra:member"].length, 0);
+	});
+
+	test("getAllPages: should stop after first page when onProgress returns false", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			const isProbe = callCount === 1;
+			return new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "hydra:Collection",
+					"@id": entityPath,
+					"hydra:member": isProbe
+						? [makeItem(1, "A")]
+						: [makeItem(1, "A"), makeItem(2, "B")],
+					"hydra:totalItems": 10,
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages(({ page }) =>
+			page >= 1 ? false : undefined,
+		);
+
+		assert.strictEqual(result["hydra:member"].length, 2);
+	});
+
+	test("getAllPages: should call onProgress with correct values", async () => {
+		const { entityService } = makeService();
+		const progressCalls: number[] = [];
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			const isProbe = callCount === 1;
+			return new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "hydra:Collection",
+					"@id": entityPath,
+					"hydra:member": isProbe
+						? [makeItem(1, "A")]
+						: [makeItem(1, "A"), makeItem(2, "B")],
+					"hydra:totalItems": 2,
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+		};
+
+		await entityService.getAllPages(({ progressPercent }) => {
+			progressCalls.push(progressPercent);
+		});
+
+		assert.ok(progressCalls.length >= 1);
+		assert.strictEqual(progressCalls[progressCalls.length - 1], 100);
+	});
+
 	test("should delete an entity by Iri", async () => {
 		const { entityService } = makeService();
 		const iri: EntityIri = "/entities/1";

@@ -11,7 +11,7 @@
 - **Typed requests** — full TypeScript generics on responses
 - **Builder pattern** — chainable `.withOptions()`, `.withHeaders()`
 - **Hydra & ApiPlatform compatible** — pagination, sorting, filtering, property selection
-- **`entityServiceBuilder`** — typed CRUD: `create`, `get`, `getAll`, `update`, `replace`, `upsert`, `delete`
+- **`entityServiceBuilder`** — typed CRUD: `create`, `get`, `getAll`, `getAllPages`, `update`, `replace`, `upsert`, `delete`
 - **Security** — token validation, safe key assertions on filter/sort ids
 - **No bundler required** — pure ESM
 
@@ -105,10 +105,8 @@ const userService = entityServiceBuilder<UserIri, UserBody, User>(
   "/users"
 );
 
-// Create — builder: .fetch(body), .withBody(body), .withHeaders(h)
-const created = await userService.create.fetch({ name: "Alice", email: "alice@example.com" });
-const created2 = await userService.create.withHeaders({ "X-Tenant": "acme" }).fetch({ name: "Alice", email: "alice@example.com" });
-const created3 = await userService.create.withBody({ name: "Alice", email: "alice@example.com" }).fetch();
+// Create
+await userService.create({ name: "Alice", email: "alice@example.com" });
 
 // Get by id or IRI
 const user = await userService.get(1);
@@ -126,14 +124,32 @@ const filtered = await userService.getAll({
   sortBy: [{ id: "name", desc: false }],
 });
 
-// Update (PATCH) — by id, IRI, or body with @id / id — returns builder
-await userService.update(1).fetch({ name: "Bob" });
-await userService.update("/users/1").fetch({ name: "Bob" });
-await userService.update({ "@id": "/users/1", name: "Bob" }).fetch({ name: "Bob" });
+// Get all pages (auto-pagination)
+const everything = await userService.getAllPages();
+
+// With filters
+const active = await userService.getAllPages({ filters: [{ id: "status", value: "active" }] });
+
+// With progress callback — return false to stop early
+const partial2 = await userService.getAllPages(({ fetchedItems, totalItems, progressPercent }) => {
+  console.log(`${progressPercent}% — ${fetchedItems}/${totalItems}`);
+  if (fetchedItems >= 500) return false; // stop after 500 items
+});
+
+// With both getOptions and onProgress
+const result = await userService.getAllPages(
+  { pageSize: 50, sortBy: [{ id: "name", desc: false }] },
+  ({ progressPercent }) => console.log(`${progressPercent}%`),
+);
+
+// Update (PATCH) — by id, IRI, or body with @id / id
+await userService.update(1, { name: "Bob" });
+await userService.update("/users/1", { name: "Bob" });
+await userService.update({ "@id": "/users/1", name: "Bob" });
 
 // Replace (PUT) — same pattern
-await userService.replace(1).fetch({ name: "Carol", email: "carol@example.com" });
-await userService.replace("/users/1").fetch({ name: "Carol", email: "carol@example.com" });
+await userService.replace(1, { name: "Carol", email: "carol@example.com" });
+await userService.replace("/users/1", { name: "Carol", email: "carol@example.com" });
 
 // Upsert — create if no id, update if @id or id present
 await userService.upsert({ name: "Dave", email: "dave@example.com" }); // → POST
@@ -234,11 +250,13 @@ controller.abort();
 
 | Method | Description |
 |--------|-------------|
-| `create` | Builder — `.fetch(body)`, `.withBody(body)`, `.withHeaders(h)` |
+| `create(body)` | POST — creates a new resource |
 | `get(idOrIri, options?)` | GET — fetches a single resource |
-| `getAll(options?)` | GET — fetches the collection |
-| `update(idOrIri)` or `update(bodyWithId)` | Returns a PATCH builder — `.fetch(body)`, `.withHeaders(h)` |
-| `replace(idOrIri)` or `replace(bodyWithId)` | Returns a PUT builder — `.fetch(body)`, `.withHeaders(h)` |
+| `getAll(options?)` | GET — fetches the collection (one page) |
+| `getAllPages(onProgress?)` | GET — fetches all pages, concatenates members. `onProgress` can return `false` to stop early |
+| `getAllPages(getOptions, onProgress?)` | Same with filters/sorting/pageSize |
+| `update(idOrIri, body)` or `update(bodyWithId)` | PATCH |
+| `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT |
 | `upsert(body)` | POST if no id, PATCH if `@id` or `id` present |
 | `delete(idOrIri)` | DELETE |
 

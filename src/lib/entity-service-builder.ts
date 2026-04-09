@@ -6,6 +6,17 @@ import type { Response } from "../types/response.ts";
 import type { PropertyPath } from "../types/property-path.ts";
 import type { PropertyValue } from "../types/property-value.ts";
 
+export type GetAllPagesProgress = {
+	page: number;
+	fetchedItems: number;
+	totalItems?: number;
+	progressPercent: number;
+};
+
+export type OnProgress = (
+	progress: GetAllPagesProgress,
+) => boolean | void | Promise<boolean | void>;
+
 type ObjectWithId<T extends object, I extends Iri<string>> = T &
 	({ "@id": I; id?: never } | { "@id"?: never; id: number });
 
@@ -51,6 +62,16 @@ type EntityService<
 	upsert: (
 		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
 	) => Promise<Response<Item<Entity, EntityIri>>>;
+	getAllPages: {
+		(onProgress?: OnProgress): Promise<Collection<Entity, EntityIri>>;
+		(
+			getOptions: Omit<
+				GetOptions<Collection<Entity, EntityIri>, never[]>,
+				"pagination" | "pageIndex"
+			>,
+			onProgress?: OnProgress,
+		): Promise<Collection<Entity, EntityIri>>;
+	};
 	delete: (idOrIri: EntityIri | number) => Promise<Response<null>>;
 };
 
@@ -147,6 +168,93 @@ const entityServiceBuilder = <
 			: create(body as EntityBody);
 	};
 
+	const getAllPages = async (
+		getOptionsOrOnProgress?:
+			| Omit<
+					GetOptions<Collection<Entity, EntityIri>, never[]>,
+					"pagination" | "pageIndex"
+			  >
+			| OnProgress,
+		maybeOnProgress?: OnProgress,
+	): Promise<Collection<Entity, EntityIri>> => {
+		const getOptions =
+			typeof getOptionsOrOnProgress === "function"
+				? undefined
+				: getOptionsOrOnProgress;
+		const onProgress =
+			typeof getOptionsOrOnProgress === "function"
+				? getOptionsOrOnProgress
+				: maybeOnProgress;
+		const ITEMS_PER_PAGE = getOptions?.pageSize ?? 100;
+
+		const fetchPage = (pageIndex: number, pageSize: number) =>
+			fetcher
+				.get<Collection<Entity, EntityIri>>(entityPath)
+				.withOptions({
+					...(getOptions as GetOptions<Collection<Entity, EntityIri>, never[]>),
+					pagination: true,
+					pageIndex,
+					pageSize,
+				})
+				.fetch();
+
+		const probeResult = await fetchPage(0, 1);
+		if (!probeResult.success) throw probeResult.error;
+
+		const totalItems = probeResult.data["hydra:totalItems"];
+
+		const shouldStart = await onProgress?.({
+			page: 0,
+			fetchedItems: 0,
+			totalItems,
+			progressPercent: 0,
+		});
+		if (shouldStart === false) {
+			return { ...probeResult.data, "hydra:member": [], "hydra:totalItems": 0 };
+		}
+
+		if (totalItems === 0) {
+			return { ...probeResult.data, "hydra:member": [], "hydra:totalItems": 0 };
+		}
+
+		const members: Collection<Entity, EntityIri>["hydra:member"] = [];
+		let page = 0;
+
+		while (members.length < totalItems) {
+			const result = await fetchPage(page, ITEMS_PER_PAGE);
+			if (!result.success) throw result.error;
+
+			members.push(
+				...(result.data["hydra:member"] as Collection<
+					Entity,
+					EntityIri
+				>["hydra:member"]),
+			);
+
+			const progressPercent =
+				totalItems > 0
+					? Math.min(100, Math.round((members.length / totalItems) * 100))
+					: 0;
+
+			const shouldContinue = await onProgress?.({
+				page: page + 1,
+				fetchedItems: members.length,
+				totalItems,
+				progressPercent,
+			});
+
+			if (shouldContinue === false) break;
+			if (result.data["hydra:member"].length < ITEMS_PER_PAGE) break;
+			page++;
+		}
+
+		return {
+			...probeResult.data,
+			"hydra:member": members,
+			"hydra:totalItems": members.length,
+		};
+	};
+
 	const del = (idOrIri: EntityIri | number) =>
 		fetcher.delete(parseIri(idOrIri)).fetch();
 
@@ -154,6 +262,7 @@ const entityServiceBuilder = <
 		create,
 		get,
 		getAll,
+		getAllPages,
 		update,
 		replace,
 		upsert,
