@@ -1,8 +1,7 @@
+import { ApiError } from "./api-error.ts";
 import { isObject, last, toPath } from "./utils.ts";
-import type { Error } from "../types/error.ts";
 import type { PropertyPath } from "../types/property-path.ts";
 import type { PropertyValue } from "../types/property-value.ts";
-import type { Response } from "../types/response.ts";
 
 type FetchMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
@@ -76,6 +75,22 @@ const assertSafeToken = (token: string | null) => {
 	}
 };
 
+const mergeHeaders = (...sources: (HeadersInit | undefined)[]): Headers => {
+	const merged = new Headers();
+	sources.forEach((source) =>
+		new Headers(source).forEach((value, key) => merged.set(key, value)),
+	);
+	return merged;
+};
+
+const parseErrorBody = (text: string): unknown => {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+};
+
 const buildGetOptions = ({
 	pagination = true,
 	pageIndex = 0,
@@ -138,8 +153,13 @@ const buildGetOptions = ({
 };
 
 const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
+	let refreshing: Promise<string | null> | undefined;
+
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
 		const url = new URL(path, entrypoint);
+		if (url.origin !== new URL(entrypoint).origin) {
+			throw new TypeError(`Cross-origin URL: "${path}"`);
+		}
 		if (searchParams) url.search = searchParams.toString();
 		return url.toString();
 	};
@@ -154,24 +174,27 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 
 		return fetch(buildURL(url, searchParams), {
 			method,
-			headers: {
-				...(body instanceof FormData
-					? {}
-					: {
-							"Content-Type":
-								method !== "PATCH"
-									? "application/ld+json"
-									: "application/merge-patch+json",
-						}),
-				Accept: "application/ld+json",
-				...(token ? { Authorization: `Bearer ${token}` } : {}),
-				...headers,
-			},
-			body: body
-				? body instanceof FormData
-					? body
-					: JSON.stringify(body)
-				: undefined,
+			headers: mergeHeaders(
+				{
+					...(body instanceof FormData
+						? {}
+						: {
+								"Content-Type":
+									method !== "PATCH"
+										? "application/ld+json"
+										: "application/merge-patch+json",
+							}),
+					Accept: "application/ld+json",
+					...(token ? { Authorization: `Bearer ${token}` } : {}),
+				},
+				headers,
+			),
+			body:
+				body == null
+					? undefined
+					: body instanceof FormData
+						? body
+						: JSON.stringify(body),
 			...restOptions,
 		});
 	};
@@ -180,14 +203,17 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		url: string,
 		method: FetchMethod,
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
-	): Promise<Response<Out>> => {
+	): Promise<Out> => {
 		const token = (await config.getToken?.()) ?? null;
 		assertSafeToken(token);
 
 		let response = await doFetch<In>(url, method, options, token);
 
 		if (response.status === 401 && config.refreshToken) {
-			const newToken = (await config.refreshToken()) ?? null;
+			refreshing ??= Promise.resolve(config.refreshToken()).finally(() => {
+				refreshing = undefined;
+			});
+			const newToken = await refreshing;
 			assertSafeToken(newToken);
 			response = await doFetch<In>(url, method, options, newToken);
 		}
@@ -197,114 +223,89 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 				await config.onUnauthorized?.();
 			}
 
-			const json = await response.json();
-			const error: Error<number> = json;
-
-			return { success: false, error };
+			throw new ApiError(
+				response.status,
+				parseErrorBody(await response.text()),
+			);
 		}
 
-		const data = method === "DELETE" ? null : await response.json();
+		const text = method === "DELETE" ? "" : await response.text();
 
-		return { success: true, data };
+		return (text === "" ? null : JSON.parse(text)) as Out;
 	};
 
-	const get = <Out extends object>(
-		url: string,
-		headers?: Record<string, string>,
-	) => ({
+	const get = <Out extends object>(url: string, headers?: HeadersInit) => ({
 		fetch: (options?: FetchOptions) =>
 			request<Out>(url, "GET", {
 				...options,
-				headers: {
-					...headers,
-					...(options?.headers as Record<string, string> | undefined),
-				},
+				headers: mergeHeaders(headers, options?.headers),
 			}),
-		withHeaders: (h: HeadersInit) =>
-			get<Out>(url, { ...headers, ...(h as Record<string, string>) }),
+		withHeaders: (h: HeadersInit) => get<Out>(url, mergeHeaders(headers, h)),
 		withOptions: <P extends PropertyPath<Out>[]>(
 			getOptions: GetOptions<Out, P>,
 		) => ({
 			fetch: (options?: FetchOptions) =>
 				request<PropertyValue<Out, P[number]>>(url, "GET", {
 					...options,
-					headers: {
-						...headers,
-						...(options?.headers as Record<string, string> | undefined),
-					},
+					headers: mergeHeaders(headers, options?.headers),
 					searchParams: buildGetOptions(getOptions as AnyGetOptions),
 				}),
 			withHeaders: (h: HeadersInit) =>
-				get<Out>(url, {
-					...headers,
-					...(h as Record<string, string>),
-				}).withOptions(getOptions),
+				get<Out>(url, mergeHeaders(headers, h)).withOptions(getOptions),
 		}),
 	});
 
-	const makeMutationBuilder = <Out extends object, In>(
+	const makeMutationBuilder = <Out extends object | null, In>(
 		method: "POST" | "PATCH" | "PUT",
 		url: string,
-		headers?: Record<string, string>,
+		headers?: HeadersInit,
 	) => ({
 		fetch: (body: In, options?: FetchOptions<In>) =>
 			request<Out, In>(url, method, {
 				...options,
-				headers: {
-					...headers,
-					...(options?.headers as Record<string, string> | undefined),
-				},
+				headers: mergeHeaders(headers, options?.headers),
 				body,
 			}),
 		withHeaders: (h: HeadersInit) =>
-			makeMutationBuilder<Out, In>(method, url, {
-				...headers,
-				...(h as Record<string, string>),
-			}),
+			makeMutationBuilder<Out, In>(method, url, mergeHeaders(headers, h)),
 		withBody: (b: In) => ({
 			fetch: (options?: FetchOptions<In>) =>
 				request<Out, In>(url, method, {
 					...options,
-					headers: {
-						...headers,
-						...(options?.headers as Record<string, string> | undefined),
-					},
+					headers: mergeHeaders(headers, options?.headers),
 					body: b,
 				}),
 			withHeaders: (h: HeadersInit) =>
-				makeMutationBuilder<Out, In>(method, url, {
-					...headers,
-					...(h as Record<string, string>),
-				}).withBody(b),
+				makeMutationBuilder<Out, In>(
+					method,
+					url,
+					mergeHeaders(headers, h),
+				).withBody(b),
 		}),
 	});
 
-	const post = <Out extends object, In>(
+	const post = <Out extends object | null, In>(
 		url: string,
-		headers?: Record<string, string>,
+		headers?: HeadersInit,
 	) => makeMutationBuilder<Out, In>("POST", url, headers);
 
-	const patch = <Out extends object, In>(
+	const patch = <Out extends object | null, In>(
 		url: string,
-		headers?: Record<string, string>,
+		headers?: HeadersInit,
 	) => makeMutationBuilder<Out, In>("PATCH", url, headers);
 
-	const put = <Out extends object, In>(
+	const put = <Out extends object | null, In>(
 		url: string,
-		headers?: Record<string, string>,
+		headers?: HeadersInit,
 	) => makeMutationBuilder<Out, In>("PUT", url, headers);
 
-	const del = (url: string, headers?: Record<string, string>) => ({
+	const del = (url: string, headers?: HeadersInit) => ({
 		fetch: (options?: FetchOptions) =>
 			request<null>(url, "DELETE", {
 				...options,
-				headers: {
-					...headers,
-					...(options?.headers as Record<string, string> | undefined),
-				},
+				headers: mergeHeaders(headers, options?.headers),
 			}),
-		withHeaders: (h: HeadersInit) =>
-			del(url, { ...headers, ...(h as Record<string, string>) }),
+		withHeaders: (h: HeadersInit) => del(url, mergeHeaders(headers, h)),
 	});
 
 	const clone = (overrides: Partial<BuilderConfig> = {}) =>

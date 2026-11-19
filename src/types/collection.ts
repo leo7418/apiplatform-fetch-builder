@@ -1,32 +1,37 @@
 import type { Iri } from "./iri.ts";
 import type { Item } from "./item.ts";
+import type { HydraKeys, HydraPrefix } from "./register.ts";
 
 export type Collection<T, I extends Iri<string> = Iri<string>> = {
 	"@context": string;
 	"@id": string;
-	"@type": "hydra:Collection";
-	"hydra:member": Omit<Item<T, I>, "@context">[];
-	"hydra:totalItems": number;
-	"hydra:view"?: {
+	"@type": `${HydraPrefix}Collection`;
+} & HydraKeys<{
+	member: Omit<Item<T, I>, "@context">[];
+	totalItems: number;
+	view?: {
 		"@id": string;
-		"@type": "hydra:PartialCollectionView";
-		"hydra:first"?: string;
-		"hydra:last"?: string;
-		"hydra:next"?: string;
-		"hydra:previous"?: string;
-	};
-	"hydra:search"?: {
-		"@type": "hydra:IriTemplate";
-		"hydra:template": string;
-		"hydra:variableRepresentation": string;
-		"hydra:mapping": {
-			"@type": "hydra:IriTemplateMapping";
-			"hydra:variable": string;
-			"hydra:property": string | null;
+		"@type": `${HydraPrefix}PartialCollectionView`;
+	} & HydraKeys<{
+		first?: string;
+		last?: string;
+		next?: string;
+		previous?: string;
+	}>;
+	search?: {
+		"@type": `${HydraPrefix}IriTemplate`;
+	} & HydraKeys<{
+		template: string;
+		variableRepresentation: string;
+		mapping: ({
+			"@type": `${HydraPrefix}IriTemplateMapping`;
 			required: boolean;
-		}[];
-	};
-};
+		} & HydraKeys<{
+			variable: string;
+			property: string | null;
+		}>)[];
+	}>;
+}>;
 
 export type GetCollectionItem<C> =
 	C extends Collection<infer T, infer I> ? Item<T, I> : never;

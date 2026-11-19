@@ -1,6 +1,7 @@
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 
+import { ApiError } from "./api-error.ts";
 import fetchBuilder from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
 
@@ -13,14 +14,12 @@ const fetcher = fetchBuilder("https://example.com", {
 });
 
 describe("fetch-builder tests methods", () => {
-	test("GET: should make a GET request with the correct header and return success=true", async () => {
+	test("GET: should make a GET request with the correct header and return the data", async () => {
 		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(input, "https://example.com/test");
 			assert.equal(init?.method, "GET");
 			assert.equal(
-				(init?.headers as Record<string, string> | undefined)?.[
-					"Authorization"
-				],
+				new Headers(init?.headers).get("Authorization"),
 				"Bearer some-complex-token",
 			);
 
@@ -32,8 +31,7 @@ describe("fetch-builder tests methods", () => {
 		global.fetch = spy;
 
 		const result = await fetcher.get<object>("/test").fetch();
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { data: "ok" });
+		assert.deepEqual(result, { data: "ok" });
 	});
 
 	test("POST: should send data in JSON and return the response", async () => {
@@ -43,7 +41,7 @@ describe("fetch-builder tests methods", () => {
 			assert.equal(input, "https://example.com/create");
 			assert.equal(init?.method, "POST");
 			assert.equal(
-				(init?.headers as Record<string, string> | undefined)?.["Content-Type"],
+				new Headers(init?.headers).get("Content-Type"),
 				"application/ld+json",
 			);
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -59,8 +57,14 @@ describe("fetch-builder tests methods", () => {
 		const result = await fetcher
 			.post<{ created: boolean }, typeof body>("/create")
 			.fetch(body);
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { created: true });
+		assert.deepEqual(result, { created: true });
+	});
+
+	test("POST: should return null when the response has no body", async () => {
+		global.fetch = async () => new Response(null, { status: 204 });
+
+		const result = await fetcher.post<null, object>("/reset").fetch({});
+		assert.equal(result, null);
 	});
 
 	test("PUT: should send data in JSON and return the response", async () => {
@@ -70,7 +74,7 @@ describe("fetch-builder tests methods", () => {
 			assert.equal(input, "https://example.com/update");
 			assert.equal(init?.method, "PUT");
 			assert.equal(
-				(init?.headers as Record<string, string> | undefined)?.["Content-Type"],
+				new Headers(init?.headers).get("Content-Type"),
 				"application/ld+json",
 			);
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -86,8 +90,7 @@ describe("fetch-builder tests methods", () => {
 		const result = await fetcher
 			.put<{ updated: boolean }, typeof body>("/update")
 			.fetch(body);
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { updated: true });
+		assert.deepEqual(result, { updated: true });
 	});
 
 	test("PATCH: should send data with Content-Type application/merge-patch+json", async () => {
@@ -96,7 +99,7 @@ describe("fetch-builder tests methods", () => {
 		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(init?.method, "PATCH");
 			assert.equal(
-				(init?.headers as Record<string, string> | undefined)?.["Content-Type"],
+				new Headers(init?.headers).get("Content-Type"),
 				"application/merge-patch+json",
 			);
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -112,11 +115,10 @@ describe("fetch-builder tests methods", () => {
 		const result = await fetcher
 			.patch<{ updated: boolean }, typeof patchData>("/resource")
 			.fetch(patchData);
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { updated: true });
+		assert.deepEqual(result, { updated: true });
 	});
 
-	test("DELETE: should return success=true and data=null", async () => {
+	test("DELETE: should return null", async () => {
 		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(init?.method, "DELETE");
 
@@ -128,11 +130,10 @@ describe("fetch-builder tests methods", () => {
 		global.fetch = spy;
 
 		const result = await fetcher.delete("/resource").fetch();
-		assert.ok(result.success);
-		assert.equal(result.data, null);
+		assert.equal(result, null);
 	});
 
-	test("Error handling: if the response is not OK, return success=false and error", async () => {
+	test("Error handling: if the response is not OK, throw an ApiError", async () => {
 		const spy = async () => {
 			return new Response(JSON.stringify({ detail: "Not authorized" }), {
 				status: 401,
@@ -141,10 +142,27 @@ describe("fetch-builder tests methods", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetcher.get<object>("/secret").fetch();
+		await assert.rejects(
+			() => fetcher.get<object>("/secret").fetch(),
+			(error) => {
+				assert.ok(error instanceof ApiError);
+				assert.equal(error.status, 401);
+				assert.deepEqual(error.body, { detail: "Not authorized" });
+				return true;
+			},
+		);
 		assert.equal(onUnauthorized.mock.callCount(), 1);
-		assert.ok(!result.success);
-		assert.deepEqual(result.error, { detail: "Not authorized" });
+	});
+
+	test("Error handling: should keep a non-JSON error body as text", async () => {
+		global.fetch = async () =>
+			new Response("<html>Bad Gateway</html>", { status: 502 });
+
+		await assert.rejects(() => fetcher.get<object>("/test").fetch(), {
+			name: "ApiError",
+			status: 502,
+			body: "<html>Bad Gateway</html>",
+		});
 	});
 });
 
@@ -173,8 +191,7 @@ describe("fetch-builder tests GET options", () => {
 			})
 			.fetch();
 
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { items: [] });
+		assert.deepEqual(result, { items: [] });
 	});
 
 	test("GET with filters: should add the correct filter parameters", async () => {
@@ -199,8 +216,7 @@ describe("fetch-builder tests GET options", () => {
 			})
 			.fetch();
 
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { items: [] });
+		assert.deepEqual(result, { items: [] });
 	});
 
 	test("GET with properties: should add the correct property parameters", async () => {
@@ -227,8 +243,7 @@ describe("fetch-builder tests GET options", () => {
 			})
 			.fetch();
 
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { items: [] });
+		assert.deepEqual(result, { items: [] });
 	});
 });
 
@@ -236,7 +251,7 @@ describe("fetch-builder withHeaders", () => {
 	test("withHeaders: should merge custom headers into the request", async () => {
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(
-				(init?.headers as Record<string, string>)?.["X-Custom-Header"],
+				new Headers(init?.headers).get("X-Custom-Header"),
 				"custom-value",
 			);
 
@@ -247,18 +262,17 @@ describe("fetch-builder withHeaders", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetcher
+		await fetcher
 			.get<object>("/test")
 			.withHeaders({ "X-Custom-Header": "custom-value" })
 			.fetch();
-		assert.ok(result.success);
 	});
 
 	test("withHeaders: should be chainable and merge multiple withHeaders calls", async () => {
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
-			const headers = init?.headers as Record<string, string>;
-			assert.equal(headers?.["X-First"], "first");
-			assert.equal(headers?.["X-Second"], "second");
+			const headers = new Headers(init?.headers);
+			assert.equal(headers.get("X-First"), "first");
+			assert.equal(headers.get("X-Second"), "second");
 
 			return new Response(JSON.stringify({ data: "ok" }), {
 				status: 200,
@@ -267,12 +281,42 @@ describe("fetch-builder withHeaders", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetcher
+		await fetcher
 			.get<object>("/test")
 			.withHeaders({ "X-First": "first" })
 			.withHeaders({ "X-Second": "second" })
 			.fetch();
-		assert.ok(result.success);
+	});
+
+	test("withHeaders: should accept a Headers instance", async () => {
+		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
+
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+		global.fetch = spy;
+
+		await fetcher
+			.get<object>("/test")
+			.withHeaders(new Headers({ "X-Tenant": "acme" }))
+			.fetch();
+	});
+
+	test("withHeaders: should override a default header whatever its case", async () => {
+		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
+			assert.equal(
+				new Headers(init?.headers).get("Content-Type"),
+				"application/json",
+			);
+
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+		global.fetch = spy;
+
+		await fetcher
+			.post<object, object>("/test")
+			.withHeaders({ "content-type": "application/json" })
+			.fetch({});
 	});
 });
 
@@ -296,16 +340,14 @@ describe("fetch-builder withBody", () => {
 			.post<{ created: boolean }, typeof body>("/create")
 			.withBody(body)
 			.fetch();
-		assert.ok(result.success);
-		assert.deepEqual(result.data, { created: true });
+		assert.deepEqual(result, { created: true });
 	});
 
 	test("withBody + withHeaders: should merge headers and keep body", async () => {
 		const body = { foo: "bar" };
 
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
-			const headers = init?.headers as Record<string, string>;
-			assert.equal(headers?.["X-Tenant"], "acme");
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
 			const sentBody = init?.body ? JSON.parse(init.body as string) : null;
 			assert.deepEqual(sentBody, body);
 
@@ -316,12 +358,11 @@ describe("fetch-builder withBody", () => {
 		};
 		global.fetch = spy;
 
-		const result = await fetcher
+		await fetcher
 			.post<{ created: boolean }, typeof body>("/create")
 			.withBody(body)
 			.withHeaders({ "X-Tenant": "acme" })
 			.fetch();
-		assert.ok(result.success);
 	});
 });
 
@@ -329,7 +370,7 @@ describe("fetch-builder clone", () => {
 	test("clone: should create a new fetcher with merged config", async () => {
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(
-				(init?.headers as Record<string, string>)?.["Authorization"],
+				new Headers(init?.headers).get("Authorization"),
 				"Bearer cloned-token",
 			);
 
@@ -341,14 +382,13 @@ describe("fetch-builder clone", () => {
 		global.fetch = spy;
 
 		const cloned = fetcher.clone({ getToken: () => "cloned-token" });
-		const result = await cloned.get<object>("/test").fetch();
-		assert.ok(result.success);
+		await cloned.get<object>("/test").fetch();
 	});
 
 	test("clone: should inherit original config when no overrides", async () => {
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(
-				(init?.headers as Record<string, string>)?.["Authorization"],
+				new Headers(init?.headers).get("Authorization"),
 				"Bearer some-complex-token",
 			);
 
@@ -360,8 +400,7 @@ describe("fetch-builder clone", () => {
 		global.fetch = spy;
 
 		const cloned = fetcher.clone();
-		const result = await cloned.get<object>("/test").fetch();
-		assert.ok(result.success);
+		await cloned.get<object>("/test").fetch();
 	});
 });
 
@@ -377,7 +416,7 @@ describe("fetch-builder refreshToken", () => {
 				});
 			}
 			assert.equal(
-				(init?.headers as Record<string, string>)?.["Authorization"],
+				new Headers(init?.headers).get("Authorization"),
 				"Bearer refreshed-token",
 			);
 			return new Response(JSON.stringify({ data: "ok" }), {
@@ -393,7 +432,7 @@ describe("fetch-builder refreshToken", () => {
 		});
 
 		const result = await refreshFetcher.get<object>("/secure").fetch();
-		assert.ok(result.success);
+		assert.deepEqual(result, { data: "ok" });
 		assert.equal(callCount, 2);
 	});
 
@@ -412,9 +451,34 @@ describe("fetch-builder refreshToken", () => {
 			onUnauthorized: onUnauthorizedMock,
 		});
 
-		const result = await refreshFetcher.get<object>("/secure").fetch();
-		assert.ok(!result.success);
+		await assert.rejects(() => refreshFetcher.get<object>("/secure").fetch(), {
+			name: "ApiError",
+			status: 401,
+		});
 		assert.equal(onUnauthorizedMock.mock.callCount(), 1);
+	});
+
+	test("refreshToken: should refresh once for concurrent 401 responses", async () => {
+		const refreshToken = mock.fn(async () => "refreshed-token");
+		global.fetch = async (_input, init) =>
+			new Headers(init?.headers).get("Authorization") === "Bearer expired-token"
+				? new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					})
+				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			getToken: () => "expired-token",
+			refreshToken,
+		});
+
+		await Promise.all([
+			refreshFetcher.get<object>("/first").fetch(),
+			refreshFetcher.get<object>("/second").fetch(),
+			refreshFetcher.get<object>("/third").fetch(),
+		]);
+
+		assert.equal(refreshToken.mock.callCount(), 1);
 	});
 });
 
@@ -476,5 +540,20 @@ describe("fetch-builder security", () => {
 			() => unsafeFetcher.get<object>("/test").fetch(),
 			TypeError,
 		);
+	});
+
+	test("buildURL: should throw on a URL from another origin", async () => {
+		const fetchMock = mock.fn(async () => new Response("{}"));
+		global.fetch = fetchMock;
+
+		await assert.rejects(
+			() => fetcher.get<object>("https://evil.test/steal").fetch(),
+			TypeError,
+		);
+		await assert.rejects(
+			() => fetcher.get<object>("//evil.test/steal").fetch(),
+			TypeError,
+		);
+		assert.equal(fetchMock.mock.callCount(), 0);
 	});
 });

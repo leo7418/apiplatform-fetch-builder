@@ -1,10 +1,10 @@
-import fetchBuilder from "apiplatform-fetch-builder";
+import fetchBuilder, { ApiError } from "apiplatform-fetch-builder";
 
 import type { CompanyCollection, CompanyItem } from "./types/company.ts";
 
 const fetcher = fetchBuilder("https://your-api.com");
 
-const companiesResult = await fetcher
+const companies = await fetcher
 	.get<CompanyCollection>("/companies")
 	.withOptions({
 		pagination: true,
@@ -23,20 +23,14 @@ const companiesResult = await fetcher
 	})
 	.fetch();
 
-if (companiesResult.success) {
-	const companies = companiesResult.data["hydra:member"];
+console.log(companies.member);
 
-	console.log(companies);
-} else {
-	console.error(companiesResult.error);
-}
-
-const companyResult = await fetcher.get<CompanyItem>("/companies/1").fetch();
-
-if (companyResult.success) {
-	const company = companyResult.data;
+try {
+	const company = await fetcher.get<CompanyItem>("/companies/1").fetch();
 
 	console.log(company);
-} else {
-	console.error(companyResult.error);
+} catch (error) {
+	if (error instanceof ApiError) {
+		console.error(error.status, error.body);
+	}
 }

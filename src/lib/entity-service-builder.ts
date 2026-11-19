@@ -2,7 +2,6 @@ import fetchBuilder, { type GetOptions } from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
 import type { Iri } from "../types/iri.ts";
 import type { Item } from "../types/item.ts";
-import type { Response } from "../types/response.ts";
 import type { PropertyPath } from "../types/property-path.ts";
 import type { PropertyValue } from "../types/property-value.ts";
 
@@ -25,43 +24,41 @@ type EntityService<
 	EntityBody extends object,
 	Entity extends object,
 > = {
-	create: (body: EntityBody) => Promise<Response<Item<Entity, EntityIri>>>;
+	create: (body: EntityBody) => Promise<Item<Entity, EntityIri>>;
 	get: {
-		(iriOrId: EntityIri | number): Promise<Response<Item<Entity, EntityIri>>>;
+		(iriOrId: EntityIri | number): Promise<Item<Entity, EntityIri>>;
 		<P extends PropertyPath<Item<Entity, EntityIri>>[]>(
 			iriOrId: EntityIri | number,
 			getOptions: GetOptions<Item<Entity, EntityIri>, P>,
-		): Promise<Response<PropertyValue<Item<Entity, EntityIri>, P[number]>>>;
+		): Promise<PropertyValue<Item<Entity, EntityIri>, P[number]>>;
 	};
 	getAll: {
-		(): Promise<Response<Collection<Entity, EntityIri>>>;
+		(): Promise<Collection<Entity, EntityIri>>;
 		<P extends PropertyPath<Collection<Entity, EntityIri>>[]>(
 			getOptions: GetOptions<Collection<Entity, EntityIri>, P>,
-		): Promise<
-			Response<PropertyValue<Collection<Entity, EntityIri>, P[number]>>
-		>;
+		): Promise<PropertyValue<Collection<Entity, EntityIri>, P[number]>>;
 	};
 	update: {
 		(
 			body: ObjectWithId<Partial<EntityBody>, EntityIri>,
-		): Promise<Response<Item<Entity, EntityIri>>>;
+		): Promise<Item<Entity, EntityIri>>;
 		(
 			idOrIri: EntityIri | number,
 			body: Partial<EntityBody>,
-		): Promise<Response<Item<Entity, EntityIri>>>;
+		): Promise<Item<Entity, EntityIri>>;
 	};
 	replace: {
 		(
 			body: ObjectWithId<EntityBody, EntityIri>,
-		): Promise<Response<Item<Entity, EntityIri>>>;
+		): Promise<Item<Entity, EntityIri>>;
 		(
 			idOrIri: EntityIri | number,
 			body: EntityBody,
-		): Promise<Response<Item<Entity, EntityIri>>>;
+		): Promise<Item<Entity, EntityIri>>;
 	};
 	upsert: (
 		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
-	) => Promise<Response<Item<Entity, EntityIri>>>;
+	) => Promise<Item<Entity, EntityIri>>;
 	getAllPages: {
 		(onProgress?: OnProgress): Promise<Collection<Entity, EntityIri>>;
 		(
@@ -72,7 +69,7 @@ type EntityService<
 			onProgress?: OnProgress,
 		): Promise<Collection<Entity, EntityIri>>;
 	};
-	delete: (idOrIri: EntityIri | number) => Promise<Response<null>>;
+	delete: (idOrIri: EntityIri | number) => Promise<null>;
 };
 
 const entityServiceBuilder = <
@@ -127,7 +124,7 @@ const entityServiceBuilder = <
 			| EntityIri
 			| number,
 		maybeBody?: Partial<EntityBody>,
-	): Promise<Response<Item<Entity, EntityIri>>> => {
+	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
 				? (idOrIriOrBody["@id"] ?? idOrIriOrBody.id)
@@ -144,7 +141,7 @@ const entityServiceBuilder = <
 	const replace = (
 		idOrIriOrBody: ObjectWithId<EntityBody, EntityIri> | EntityIri | number,
 		maybeBody?: EntityBody,
-	): Promise<Response<Item<Entity, EntityIri>>> => {
+	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
 				? (idOrIriOrBody["@id"] ?? idOrIriOrBody.id)!
@@ -158,12 +155,12 @@ const entityServiceBuilder = <
 
 	const upsert = (
 		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
-	): Promise<Response<Item<Entity, EntityIri>>> => {
+	): Promise<Item<Entity, EntityIri>> => {
 		const id =
 			(body as ObjectWithId<Partial<EntityBody>, EntityIri>)["@id"] ??
 			(body as ObjectWithId<Partial<EntityBody>, EntityIri>).id;
 
-		return id
+		return id !== undefined
 			? update(body as ObjectWithId<Partial<EntityBody>, EntityIri>)
 			: create(body as EntityBody);
 	};
@@ -187,7 +184,10 @@ const entityServiceBuilder = <
 				: maybeOnProgress;
 		const ITEMS_PER_PAGE = getOptions?.pageSize ?? 100;
 
-		const fetchPage = (pageIndex: number, pageSize: number) =>
+		const fetchPage = (
+			pageIndex: number,
+			pageSize: number,
+		): Promise<Record<string, unknown>> =>
 			fetcher
 				.get<Collection<Entity, EntityIri>>(entityPath)
 				.withOptions({
@@ -198,61 +198,49 @@ const entityServiceBuilder = <
 				})
 				.fetch();
 
-		const probeResult = await fetchPage(0, 1);
-		if (!probeResult.success) throw probeResult.error;
+		const probe = await fetchPage(0, 1);
+		const prefix = "hydra:member" in probe ? "hydra:" : "";
+		const totalItems = probe[`${prefix}totalItems`] as number | undefined;
 
-		const totalItems = probeResult.data["hydra:totalItems"];
-
-		const shouldStart = await onProgress?.({
+		const members: unknown[] = [];
+		let page = 0;
+		let shouldContinue = await onProgress?.({
 			page: 0,
 			fetchedItems: 0,
 			totalItems,
 			progressPercent: 0,
 		});
-		if (shouldStart === false) {
-			return { ...probeResult.data, "hydra:member": [], "hydra:totalItems": 0 };
-		}
 
-		if (totalItems === 0) {
-			return { ...probeResult.data, "hydra:member": [], "hydra:totalItems": 0 };
-		}
+		while (
+			shouldContinue !== false &&
+			(totalItems === undefined || members.length < totalItems)
+		) {
+			const pageMembers = (await fetchPage(page, ITEMS_PER_PAGE))[
+				`${prefix}member`
+			] as unknown[];
+			if (pageMembers.length === 0) break;
 
-		const members: Collection<Entity, EntityIri>["hydra:member"] = [];
-		let page = 0;
+			members.push(...pageMembers);
+			page++;
 
-		while (members.length < totalItems) {
-			const result = await fetchPage(page, ITEMS_PER_PAGE);
-			if (!result.success) throw result.error;
-
-			members.push(
-				...(result.data["hydra:member"] as Collection<
-					Entity,
-					EntityIri
-				>["hydra:member"]),
-			);
-
-			const progressPercent =
-				totalItems > 0
-					? Math.min(100, Math.round((members.length / totalItems) * 100))
-					: 0;
-
-			const shouldContinue = await onProgress?.({
-				page: page + 1,
+			shouldContinue = await onProgress?.({
+				page,
 				fetchedItems: members.length,
 				totalItems,
-				progressPercent,
+				progressPercent: totalItems
+					? Math.min(100, Math.round((members.length / totalItems) * 100))
+					: 0,
 			});
-
-			if (shouldContinue === false) break;
-			if (result.data["hydra:member"].length < ITEMS_PER_PAGE) break;
-			page++;
 		}
 
-		return {
-			...probeResult.data,
-			"hydra:member": members,
-			"hydra:totalItems": members.length,
+		const collection: Record<string, unknown> = {
+			...probe,
+			[`${prefix}member`]: members,
+			[`${prefix}totalItems`]: members.length,
 		};
+		delete collection[`${prefix}view`];
+
+		return collection as Collection<Entity, EntityIri>;
 	};
 
 	const del = (idOrIri: EntityIri | number) =>

@@ -32,10 +32,8 @@ const api = fetchBuilder("https://api.example.com", {
 });
 
 // GET
-const result = await api.get<{ name: string }>("/users/1").fetch();
-if (result.success) {
-  console.log(result.data.name);
-}
+const user = await api.get<{ name: string }>("/users/1").fetch();
+console.log(user.name);
 
 // GET with options
 const list = await api
@@ -87,6 +85,38 @@ controller.abort(); // cancels in-flight request
 // Clone a fetcher with config overrides
 const tenantApi = api.clone({ getToken: () => getTenantToken() });
 ```
+
+## Error handling
+
+Every `.fetch()` resolves with the body of the response. A response that is not OK rejects with an `ApiError` carrying the HTTP `status` and the `body` sent by the API (parsed JSON, or the raw text when it is not JSON).
+
+```ts
+import { ApiError } from "apiplatform-fetch-builder";
+
+try {
+  await api.get<User>("/users/1").fetch();
+} catch (error) {
+  if (error instanceof ApiError && error.status === 404) {
+    console.log(error.body);
+  }
+}
+```
+
+A response without a body (204, `DELETE`) resolves with `null`. A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API.
+
+## `hydra:` prefix
+
+The types follow the API Platform 4 default, where collections and errors have no `hydra:` prefix (`member`, `totalItems`, `view`). When the API keeps the prefix (API Platform 3, or `hydra_prefix: true`), declare it once in the project:
+
+```ts
+declare module "apiplatform-fetch-builder" {
+  interface Register {
+    hydraPrefix: true;
+  }
+}
+```
+
+`Collection` and `Error` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:description`. `getAllPages` reads both formats at runtime.
 
 ## `entityServiceBuilder`
 
@@ -183,7 +213,7 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 |-----------|------|-------------|
 | `entrypoint` | `string` | Base URL of the API |
 | `config.getToken` | `() => string \| null \| Promise<string \| null>` | Returns the Bearer token |
-| `config.refreshToken` | `() => string \| null \| Promise<string \| null>` | Called on 401 — retries the request with the new token before `onUnauthorized` |
+| `config.refreshToken` | `() => string \| null \| Promise<string \| null>` | Called on 401 — retries the request with the new token before `onUnauthorized`. Concurrent 401 responses share a single call |
 | `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after retry (or immediately if no `refreshToken`) |
 
 Returns `{ get, post, patch, put, delete, clone }`.
@@ -228,7 +258,7 @@ controller.abort();
 
 | Method | Description |
 |--------|-------------|
-| `.fetch(options?)` | Performs the DELETE request, returns `null` data |
+| `.fetch(options?)` | Performs the DELETE request, resolves with `null` |
 | `.withHeaders(headers)` | Merges custom headers |
 
 ---

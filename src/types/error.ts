@@ -1,9 +1,9 @@
+import type { HydraKeys, HydraPrefix } from "./register.ts";
+
 export type Error<S extends number> = {
 	"@id": `/errors/${S}`;
-	"@type": "hydra:Error";
+	"@type": `${HydraPrefix}Error`;
 	detail: string;
-	"hydra:description": string;
-	"hydra:title": string;
 	status: S;
 	title: string;
 	trace?: {
@@ -19,4 +19,7 @@ export type Error<S extends number> = {
 		message: string;
 		code: string;
 	}[];
-};
+} & HydraKeys<{
+	description: string;
+	title: string;
+}>;

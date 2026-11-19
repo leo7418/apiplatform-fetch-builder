@@ -48,8 +48,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.create(body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should get an entity by Iri", async () => {
@@ -61,7 +60,7 @@ describe("entityServiceBuilder", () => {
 		getMocked.mock.mockImplementationOnce(
 			() =>
 				({
-					fetch: async () => ({ success: true, data: response }),
+					fetch: async () => response,
 				}) as unknown as ReturnType<
 					typeof fetcher.get<Item<Entity, EntityIri>>
 				>,
@@ -72,8 +71,7 @@ describe("entityServiceBuilder", () => {
 
 		assert.strictEqual(getMocked.mock.callCount(), 1);
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], iri);
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should get an entity by id with options", async () => {
@@ -91,7 +89,7 @@ describe("entityServiceBuilder", () => {
 			() =>
 				({
 					withOptions: mock.fn(() => ({
-						fetch: async () => ({ success: true, data: response }),
+						fetch: async () => response,
 					})),
 				}) as unknown as ReturnType<
 					typeof fetcher.get<Item<Entity, EntityIri>>
@@ -122,25 +120,24 @@ describe("entityServiceBuilder", () => {
 			).mock.calls[0].arguments[0],
 			getOptions,
 		);
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should get all entities", async () => {
 		const { fetcher, entityService } = makeService();
 		const response: Collection<Entity, EntityIri> = {
 			"@context": "",
-			"@type": "hydra:Collection",
+			"@type": "Collection",
 			"@id": "/entities/1",
-			"hydra:member": [makeItem(1, "Test Entity")],
-			"hydra:totalItems": 1,
+			member: [makeItem(1, "Test Entity")],
+			totalItems: 1,
 		};
 
 		const getMocked = mock.fn(fetcher.get<Item<Entity, EntityIri>>);
 		getMocked.mock.mockImplementationOnce(
 			() =>
 				({
-					fetch: async () => ({ success: true, data: response }),
+					fetch: async () => response,
 				}) as unknown as ReturnType<
 					typeof fetcher.get<Item<Entity, EntityIri>>
 				>,
@@ -151,24 +148,23 @@ describe("entityServiceBuilder", () => {
 
 		assert.strictEqual(getMocked.mock.callCount(), 1);
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], entityPath);
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should get all entities with options", async () => {
 		const { fetcher, entityService } = makeService();
 		const response: Collection<Entity, EntityIri> = {
 			"@context": "",
-			"@type": "hydra:Collection",
+			"@type": "Collection",
 			"@id": "/entities/1",
-			"hydra:member": [
+			member: [
 				{
 					"@type": "",
 					"@id": "/entities/1",
 					calculatedName: "Test Entity",
 				} as unknown as Item<Entity, EntityIri>,
 			],
-			"hydra:totalItems": 1,
+			totalItems: 1,
 		};
 
 		const getMocked = mock.fn(fetcher.get<Item<Entity, EntityIri>>);
@@ -176,7 +172,7 @@ describe("entityServiceBuilder", () => {
 			() =>
 				({
 					withOptions: mock.fn(() => ({
-						fetch: async () => ({ success: true, data: response }),
+						fetch: async () => response,
 					})),
 				}) as unknown as ReturnType<
 					typeof fetcher.get<Item<Entity, EntityIri>>
@@ -207,8 +203,7 @@ describe("entityServiceBuilder", () => {
 			).mock.calls[0].arguments[0],
 			getOptions,
 		);
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should update an entity by Iri", async () => {
@@ -226,8 +221,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.update(iri, body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should update an entity by id", async () => {
@@ -245,8 +239,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.update(id, body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should update an entity by body with @id", async () => {
@@ -266,8 +259,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.update(bodyWithId);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should replace an entity by Iri", async () => {
@@ -285,8 +277,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.replace(iri, body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should replace an entity by id", async () => {
@@ -304,8 +295,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.replace(id, body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("should replace an entity by body with @id", async () => {
@@ -325,8 +315,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.replace(bodyWithId);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("upsert: should call create when body has no id", async () => {
@@ -341,8 +330,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.upsert(body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("upsert: should call update when body has @id", async () => {
@@ -358,8 +346,7 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.upsert(body);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, response);
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("upsert: should call update when body has numeric id", async () => {
@@ -375,7 +362,25 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.upsert(body);
 
-		assert.ok(result.success);
+		assert.deepStrictEqual(result, response);
+	});
+
+	test("upsert: should call update when body has id 0", async () => {
+		const { entityService } = makeService();
+		const response = makeItem(0, "Updated Entity");
+
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/0`);
+			assert.equal(init?.method, "PATCH");
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
+
+		const result = await entityService.upsert({
+			id: 0,
+			name: "Updated Entity",
+		});
+
+		assert.deepStrictEqual(result, response);
 	});
 
 	test("getAllPages: should return empty collection when totalItems is 0", async () => {
@@ -385,18 +390,18 @@ describe("entityServiceBuilder", () => {
 			new Response(
 				JSON.stringify({
 					"@context": "",
-					"@type": "hydra:Collection",
+					"@type": "Collection",
 					"@id": entityPath,
-					"hydra:member": [],
-					"hydra:totalItems": 0,
+					member: [],
+					totalItems: 0,
 				} satisfies Collection<Entity, EntityIri>),
 				{ status: 200 },
 			);
 
 		const result = await entityService.getAllPages();
 
-		assert.deepStrictEqual(result["hydra:member"], []);
-		assert.strictEqual(result["hydra:totalItems"], 0);
+		assert.deepStrictEqual(result.member, []);
+		assert.strictEqual(result.totalItems, 0);
 	});
 
 	test("getAllPages: should fetch all pages and concatenate members", async () => {
@@ -411,10 +416,10 @@ describe("entityServiceBuilder", () => {
 			return new Response(
 				JSON.stringify({
 					"@context": "",
-					"@type": "hydra:Collection",
+					"@type": "Collection",
 					"@id": entityPath,
-					"hydra:member": members,
-					"hydra:totalItems": 3,
+					member: members,
+					totalItems: 3,
 				} satisfies Collection<Entity, EntityIri>),
 				{ status: 200 },
 			);
@@ -422,8 +427,8 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.getAllPages();
 
-		assert.strictEqual(result["hydra:totalItems"], 3);
-		assert.strictEqual(result["hydra:member"].length, 3);
+		assert.strictEqual(result.totalItems, 3);
+		assert.strictEqual(result.member.length, 3);
 	});
 
 	test("getAllPages: should stop at probe when onProgress returns false on page 0", async () => {
@@ -433,10 +438,10 @@ describe("entityServiceBuilder", () => {
 			new Response(
 				JSON.stringify({
 					"@context": "",
-					"@type": "hydra:Collection",
+					"@type": "Collection",
 					"@id": entityPath,
-					"hydra:member": [makeItem(1, "A")],
-					"hydra:totalItems": 10,
+					member: [makeItem(1, "A")],
+					totalItems: 10,
 				} satisfies Collection<Entity, EntityIri>),
 				{ status: 200 },
 			);
@@ -445,7 +450,7 @@ describe("entityServiceBuilder", () => {
 			page === 0 ? false : undefined,
 		);
 
-		assert.strictEqual(result["hydra:member"].length, 0);
+		assert.strictEqual(result.member.length, 0);
 	});
 
 	test("getAllPages: should stop after first page when onProgress returns false", async () => {
@@ -458,12 +463,12 @@ describe("entityServiceBuilder", () => {
 			return new Response(
 				JSON.stringify({
 					"@context": "",
-					"@type": "hydra:Collection",
+					"@type": "Collection",
 					"@id": entityPath,
-					"hydra:member": isProbe
+					member: isProbe
 						? [makeItem(1, "A")]
 						: [makeItem(1, "A"), makeItem(2, "B")],
-					"hydra:totalItems": 10,
+					totalItems: 10,
 				} satisfies Collection<Entity, EntityIri>),
 				{ status: 200 },
 			);
@@ -473,7 +478,7 @@ describe("entityServiceBuilder", () => {
 			page >= 1 ? false : undefined,
 		);
 
-		assert.strictEqual(result["hydra:member"].length, 2);
+		assert.strictEqual(result.member.length, 2);
 	});
 
 	test("getAllPages: should call onProgress with correct values", async () => {
@@ -487,12 +492,12 @@ describe("entityServiceBuilder", () => {
 			return new Response(
 				JSON.stringify({
 					"@context": "",
-					"@type": "hydra:Collection",
+					"@type": "Collection",
 					"@id": entityPath,
-					"hydra:member": isProbe
+					member: isProbe
 						? [makeItem(1, "A")]
 						: [makeItem(1, "A"), makeItem(2, "B")],
-					"hydra:totalItems": 2,
+					totalItems: 2,
 				} satisfies Collection<Entity, EntityIri>),
 				{ status: 200 },
 			);
@@ -504,6 +509,75 @@ describe("entityServiceBuilder", () => {
 
 		assert.ok(progressCalls.length >= 1);
 		assert.strictEqual(progressCalls[progressCalls.length - 1], 100);
+	});
+
+	test("getAllPages: should fetch every page when the server ignores the page size", async () => {
+		const { entityService } = makeService();
+		const allMembers = [1, 2, 3, 4, 5].map((id) =>
+			makeItem(id, `Entity ${id}`),
+		);
+		let callCount = 0;
+
+		global.fetch = async (input) => {
+			callCount++;
+			const page = Number(new URL(input.toString()).searchParams.get("page"));
+			return new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "Collection",
+					"@id": entityPath,
+					member: allMembers.slice((page - 1) * 2, page * 2),
+					totalItems: 5,
+					view: {
+						"@id": `${entityPath}?page=${page}`,
+						"@type": "PartialCollectionView",
+					},
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.deepStrictEqual(result.member, allMembers);
+		assert.strictEqual(result.totalItems, 5);
+		assert.strictEqual(result.view, undefined);
+		assert.strictEqual(callCount, 4);
+	});
+
+	test("getAllPages: should read a collection with the hydra: prefix", async () => {
+		const { entityService } = makeService();
+		const allMembers = [makeItem(1, "A"), makeItem(2, "B"), makeItem(3, "C")];
+
+		global.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "hydra:Collection",
+					"@id": entityPath,
+					"hydra:member": allMembers,
+					"hydra:totalItems": 3,
+				}),
+				{ status: 200 },
+			);
+
+		const result: Record<string, unknown> = await entityService.getAllPages();
+
+		assert.deepStrictEqual(result["hydra:member"], allMembers);
+		assert.strictEqual(result["hydra:totalItems"], 3);
+	});
+
+	test("getAllPages: should throw an ApiError when a page fails", async () => {
+		const { entityService } = makeService();
+
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Forbidden" }), { status: 403 });
+
+		await assert.rejects(() => entityService.getAllPages(), {
+			name: "ApiError",
+			status: 403,
+			body: { detail: "Forbidden" },
+		});
 	});
 
 	test("should delete an entity by Iri", async () => {
@@ -518,7 +592,6 @@ describe("entityServiceBuilder", () => {
 
 		const result = await entityService.delete(iri);
 
-		assert.ok(result.success);
-		assert.deepStrictEqual(result.data, null);
+		assert.deepStrictEqual(result, null);
 	});
 });
