@@ -1,7 +1,7 @@
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiError } from "./api-error.ts";
+import { ApiError, isHydraError } from "./api-error.ts";
 import fetchBuilder from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
 
@@ -162,6 +162,43 @@ describe("fetch-builder tests methods", () => {
 			status: 502,
 			body: "<html>Bad Gateway</html>",
 		});
+	});
+});
+
+describe("fetch-builder isHydraError", () => {
+	test("should narrow the body of an API Platform error", async () => {
+		global.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					"@type": "ConstraintViolationList",
+					title: "An error occurred",
+					violations: [
+						{
+							propertyPath: "name",
+							message: "This value should not be blank.",
+						},
+					],
+				}),
+				{ status: 422 },
+			);
+
+		await assert.rejects(
+			() => fetcher.post<object, object>("/users").fetch({}),
+			(error) => {
+				assert.ok(error instanceof ApiError);
+				assert.ok(isHydraError(error.body));
+				assert.equal(error.body.violations?.[0].propertyPath, "name");
+				return true;
+			},
+		);
+	});
+
+	test("should reject a body that is not an API Platform error", () => {
+		assert.equal(
+			isHydraError({ code: 401, message: "JWT Token not found" }),
+			false,
+		);
+		assert.equal(isHydraError("<html>Bad Gateway</html>"), false);
 	});
 });
 
@@ -591,6 +628,25 @@ describe("fetch-builder config headers", () => {
 		};
 
 		await fetcher.get<object>("/test").fetch();
+	});
+});
+
+describe("fetch-builder config request options", () => {
+	test("should apply them to every request and let a request override them", async () => {
+		const sent: (RequestCredentials | undefined)[] = [];
+		global.fetch = async (_input, init) => {
+			sent.push(init?.credentials);
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		const withCookies = fetchBuilder("https://example.com", {
+			credentials: "include",
+		});
+
+		await withCookies.get<object>("/test").fetch();
+		await withCookies.get<object>("/test").fetch({ credentials: "omit" });
+
+		assert.deepEqual(sent, ["include", "omit"]);
 	});
 });
 

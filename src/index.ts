@@ -1,6 +1,6 @@
 import fetchBuilder from "./lib/fetch-builder.ts";
 import entityServiceBuilder from "./lib/entity-service-builder.ts";
-import { ApiError } from "./lib/api-error.ts";
+import { ApiError, isHydraError } from "./lib/api-error.ts";
 export type * from "./types/collection.ts";
 export type * from "./types/error.ts";
 export type * from "./types/item.ts";
@@ -20,4 +20,4 @@ export type {
 } from "./lib/entity-service-builder.ts";
 
 export default fetchBuilder;
-export { entityServiceBuilder, ApiError };
+export { entityServiceBuilder, ApiError, isHydraError };

@@ -1,10 +1,10 @@
-import type { HydraKeys, HydraPrefix } from "./register.ts";
+import type { HydraKeys } from "./register.ts";
 
-export type HydraError<S extends number> = {
-	"@id": `/errors/${S}`;
-	"@type": `${HydraPrefix}Error`;
-	detail: string;
-	status: S;
+export type HydraError<S extends number = number> = {
+	"@id"?: string;
+	"@type": string;
+	detail?: string;
+	status?: S;
 	title: string;
 	trace?: {
 		class: string;
@@ -13,13 +13,13 @@ export type HydraError<S extends number> = {
 		line: number;
 		type: string;
 	}[];
-	type: `/errors/${S}`;
+	type?: string;
 	violations?: {
 		propertyPath: string;
 		message: string;
-		code: string;
+		code?: string;
 	}[];
 } & HydraKeys<{
-	description: string;
-	title: string;
+	description?: string;
+	title?: string;
 }>;

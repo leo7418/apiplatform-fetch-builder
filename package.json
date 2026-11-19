@@ -39,8 +39,8 @@
 		"build:setup": "mkdir -p dist && cp package.json dist && cp README.md dist && cp LICENSE dist",
 		"build:js": "tsc -p tsconfig.lib.json && find dist/types -type f ! -name '*.ts' -delete",
 		"build": "pnpm build:clean && pnpm build:setup && pnpm build:js",
-		"typecheck": "tsc --noEmit",
-		"lint": "tsc --noEmit && eslint src",
+		"typecheck": "tsc --noEmit && tsc -p examples/basic && tsc -p examples/entity-service-builder && tsc -p examples/hydra-prefix",
+		"lint": "pnpm typecheck && eslint src",
 		"lint:fix": "eslint src --fix",
 		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'"
 	},

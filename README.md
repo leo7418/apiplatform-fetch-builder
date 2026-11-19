@@ -111,6 +111,18 @@ try {
 }
 ```
 
+`isHydraError` narrows the body to the error format of API Platform, without a cast:
+
+```ts
+import { ApiError, isHydraError } from "apiplatform-fetch-builder";
+
+if (error instanceof ApiError && isHydraError(error.body)) {
+  error.body.violations?.forEach(({ propertyPath, message }) => {
+    form.setError(propertyPath, message);
+  });
+}
+```
+
 A response without a body (204, `DELETE`) resolves with `null`. A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API.
 
 ## `hydra:` prefix
@@ -125,7 +137,7 @@ declare module "apiplatform-fetch-builder" {
 }
 ```
 
-`Collection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:description`. `getAllPages` reads both formats at runtime.
+`Collection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
 
 ## `entityServiceBuilder`
 
@@ -227,6 +239,7 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 | `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request. `withHeaders` and `fetch({ headers })` override them |
 | `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call. Do not call the refresh endpoint through the same fetcher |
 | `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after the retry (or immediately if no `refreshAuth`) |
+| `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`…) applies to every request; `fetch(options)` overrides it |
 
 Returns `{ get, post, patch, put, delete, clone }`.
 
@@ -303,6 +316,28 @@ Only the options that are set are sent; the API defaults apply to the others.
 | `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT |
 | `upsert(body)` | POST if no id, PATCH if `@id` or `id` present |
 | `delete(idOrIri)` | DELETE |
+
+## Recipes
+
+### Typing a custom search endpoint
+
+`withOptions` narrows the response of a `GET`. For an endpoint that takes `properties` another way, such as a `POST /search` reading them from the body, `PropertyPath` and `PropertyValue` give the same narrowing:
+
+```ts
+import type { PropertyPath, PropertyValue } from "apiplatform-fetch-builder";
+
+const search =
+  <Out extends object>(url: string) =>
+  <P extends PropertyPath<Out>[]>(body: { properties: P }) =>
+    api.post<PropertyValue<Out, P[number]>, { properties: P }>(url).fetch(body);
+
+const users = await search<Collection<User>>("/users/search")({
+  properties: ["name"],
+});
+
+users.member[0].name; // string
+users.member[0].email; // compile error: not selected
+```
 
 ## License
 

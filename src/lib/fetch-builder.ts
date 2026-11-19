@@ -59,7 +59,7 @@ export type GetOptions<
 	  }
 );
 
-export type BuilderConfig = {
+export type BuilderConfig = Omit<RequestInit, "method" | "body" | "headers"> & {
 	/** Headers sent with every request; a function is called before each request. */
 	headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
 	/** Called on a 401 response; the request is then retried once with fresh headers. */
@@ -154,6 +154,12 @@ const buildGetOptions = ({
 };
 
 const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
+	const {
+		headers: commonHeaders,
+		refreshAuth,
+		onUnauthorized,
+		...init
+	} = config;
 	let refreshing: Promise<void> | undefined;
 
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
@@ -182,6 +188,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		const { body, headers, searchParams, ...restOptions } = options;
 
 		return fetch(buildURL(url, searchParams), {
+			...init,
 			method,
 			headers: mergeHeaders(
 				{
@@ -195,9 +202,9 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 							}),
 					Accept: "application/ld+json",
 				},
-				typeof config.headers === "function"
-					? await config.headers()
-					: config.headers,
+				typeof commonHeaders === "function"
+					? await commonHeaders()
+					: commonHeaders,
 				headers,
 			),
 			body:
@@ -217,8 +224,8 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 	): Promise<Out> => {
 		let response = await doFetch<In>(url, method, options);
 
-		if (response.status === 401 && config.refreshAuth) {
-			refreshing ??= Promise.resolve(config.refreshAuth()).finally(() => {
+		if (response.status === 401 && refreshAuth) {
+			refreshing ??= Promise.resolve(refreshAuth()).finally(() => {
 				refreshing = undefined;
 			});
 			await refreshing;
@@ -227,7 +234,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 
 		if (!response.ok) {
 			if (response.status === 401) {
-				await config.onUnauthorized?.();
+				await onUnauthorized?.();
 			}
 
 			throw new ApiError(

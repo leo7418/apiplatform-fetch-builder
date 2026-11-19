@@ -1,0 +1,15 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"allowImportingTsExtensions": true,
+		"rewriteRelativeImportExtensions": true,
+		"verbatimModuleSyntax": true,
+		"target": "esnext",
+		"module": "NodeNext",
+		"noEmit": true,
+		"paths": {
+			"apiplatform-fetch-builder": ["../../src/index.ts"]
+		}
+	},
+	"include": ["./**/*.ts"]
+}
