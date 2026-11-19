@@ -12,7 +12,7 @@
 - **Builder pattern** — chainable `.withOptions()`, `.withHeaders()`
 - **Hydra & ApiPlatform compatible** — pagination, sorting, filtering, property selection
 - **`entityServiceBuilder`** — typed CRUD: `create`, `get`, `getAll`, `getAllPages`, `update`, `replace`, `upsert`, `delete`
-- **Security** — token validation, safe key assertions on filter/sort ids
+- **Security** — requests never leave the entrypoint origin, safe key assertions on filter/sort ids
 - **No bundler required** — pure ESM
 
 ## Installation
@@ -27,7 +27,16 @@ pnpm add apiplatform-fetch-builder
 import fetchBuilder from "apiplatform-fetch-builder";
 
 const api = fetchBuilder("https://api.example.com", {
-  getToken: () => localStorage.getItem("token"),
+  headers: () => {
+    const token = localStorage.getItem("token");
+    return {
+      ...(token && { Authorization: `Bearer ${token}` }),
+      "Accept-Language": navigator.language,
+    };
+  },
+  refreshAuth: async () => {
+    localStorage.setItem("token", await fetchNewToken());
+  },
   onUnauthorized: () => router.push("/login"),
 });
 
@@ -83,7 +92,7 @@ const result4 = await api.get<User>("/users/1").fetch({ signal: controller.signa
 controller.abort(); // cancels in-flight request
 
 // Clone a fetcher with config overrides
-const tenantApi = api.clone({ getToken: () => getTenantToken() });
+const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 ```
 
 ## Error handling
@@ -116,7 +125,7 @@ declare module "apiplatform-fetch-builder" {
 }
 ```
 
-`Collection` and `Error` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:description`. `getAllPages` reads both formats at runtime.
+`Collection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:description`. `getAllPages` reads both formats at runtime.
 
 ## `entityServiceBuilder`
 
@@ -131,7 +140,7 @@ type UserBody = { name: string; email: string };
 type User = UserBody & { createdAt: string };
 
 const userService = entityServiceBuilder<UserIri, UserBody, User>(
-  fetchBuilder("https://api.example.com", { getToken }),
+  fetchBuilder("https://api.example.com", { headers }),
   "/users"
 );
 
@@ -141,6 +150,9 @@ await userService.create({ name: "Alice", email: "alice@example.com" });
 // Get by id or IRI
 const user = await userService.get(1);
 const user2 = await userService.get("/users/1");
+
+// String identifiers (UUID, ULID, slug): type the IRI with Iri<"users", string>
+// const user3 = await userService.get("f47ac10b-58cc-4372-a567-0e02b2c3d479");
 
 // Get with property selection
 const partial = await userService.get(1, { properties: ["name"] });
@@ -211,19 +223,19 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entrypoint` | `string` | Base URL of the API |
-| `config.getToken` | `() => string \| null \| Promise<string \| null>` | Returns the Bearer token |
-| `config.refreshToken` | `() => string \| null \| Promise<string \| null>` | Called on 401 — retries the request with the new token before `onUnauthorized`. Concurrent 401 responses share a single call |
-| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after retry (or immediately if no `refreshToken`) |
+| `entrypoint` | `string` | Base URL of the API. Its path is prepended to every path that does not already start with it, so `/users` and the IRI `/api/users/1` both work with `https://api.example.com/api` |
+| `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request. `withHeaders` and `fetch({ headers })` override them |
+| `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call. Do not call the refresh endpoint through the same fetcher |
+| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after the retry (or immediately if no `refreshAuth`) |
 
 Returns `{ get, post, patch, put, delete, clone }`.
 
 ### `clone(overrides?)`
 
-Returns a new fetcher with the same `entrypoint` and config merged with `overrides`. Useful for per-tenant or per-user token overrides without recreating the full builder.
+Returns a new fetcher with the same `entrypoint` and config merged with `overrides`. An overridden key replaces the original one, `headers` included.
 
 ```ts
-const tenantApi = api.clone({ getToken: () => getTenantToken() });
+const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 ```
 
 ---
@@ -267,12 +279,14 @@ controller.abort();
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `pagination` | `boolean` | Default `true` |
+| `pagination` | `boolean` | Enables or disables pagination |
 | `pageIndex` | `number` | 0-based page index |
-| `pageSize` | `number` | Items per page, default `10` |
+| `pageSize` | `number` | Items per page |
 | `sortBy` | `{ id: PropertyPath, desc: boolean }[]` | Sort fields (type-safe) |
 | `filters` | `{ id: PropertyPath, value: ... }[]` | Filter fields (type-safe) |
 | `properties` | `PropertyPath[]` | Partial response selection |
+
+Only the options that are set are sent; the API defaults apply to the others.
 
 ---
 

@@ -20,8 +20,9 @@ type AnyGetOptions = {
 			| Date
 			| string
 			| number
+			| boolean
 			| (string | number)[]
-			| Record<string | number, string | number>;
+			| Record<string | number, string | number | boolean>;
 	}[];
 	properties?: string[];
 };
@@ -40,8 +41,9 @@ export type GetOptions<
 			| Date
 			| string
 			| number
+			| boolean
 			| (string | number)[]
-			| Record<string | number, string | number>;
+			| Record<string | number, string | number | boolean>;
 	}[];
 	properties?: P;
 } & (
@@ -58,20 +60,17 @@ export type GetOptions<
 );
 
 export type BuilderConfig = {
-	getToken?: () => string | null | Promise<string | null>;
-	refreshToken?: () => string | null | Promise<string | null>;
+	/** Headers sent with every request; a function is called before each request. */
+	headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
+	/** Called on a 401 response; the request is then retried once with fresh headers. */
+	refreshAuth?: () => void | Promise<void>;
+	/** Called when the response is still a 401 after the retry, or when there is no `refreshAuth`. */
 	onUnauthorized?: () => void | Promise<void>;
 };
 
 const assertSafeKey = (key: string, context: string) => {
 	if (!/^[\w.]+$/.test(key)) {
 		throw new TypeError(`Unsafe ${context} key: "${key}"`);
-	}
-};
-
-const assertSafeToken = (token: string | null) => {
-	if (token !== null && (token === "" || /\s/.test(token))) {
-		throw new TypeError("Invalid Bearer token");
 	}
 };
 
@@ -92,21 +91,23 @@ const parseErrorBody = (text: string): unknown => {
 };
 
 const buildGetOptions = ({
-	pagination = true,
-	pageIndex = 0,
-	pageSize = 10,
+	pagination,
+	pageIndex,
+	pageSize,
 	sortBy = [],
 	filters = [],
 	properties = [],
 }: AnyGetOptions): URLSearchParams => {
 	const searchParams = new URLSearchParams();
 
-	if (pagination) {
-		searchParams.append("pagination", "true");
+	if (pagination !== undefined) {
+		searchParams.append("pagination", pagination.toString());
+	}
+	if (pageIndex !== undefined) {
 		searchParams.append("page", (pageIndex + 1).toString());
+	}
+	if (pageSize !== undefined) {
 		searchParams.append("itemsPerPage", pageSize.toString());
-	} else {
-		searchParams.append("pagination", "false");
 	}
 
 	sortBy.forEach(({ id, desc }) => {
@@ -153,12 +154,21 @@ const buildGetOptions = ({
 };
 
 const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
-	let refreshing: Promise<string | null> | undefined;
+	let refreshing: Promise<void> | undefined;
 
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
-		const url = new URL(path, entrypoint);
-		if (url.origin !== new URL(entrypoint).origin) {
+		const base = new URL(entrypoint);
+		const basePath = base.pathname.replace(/\/+$/, "");
+		const url = new URL(path, `${base.origin}/`);
+		if (url.origin !== base.origin) {
 			throw new TypeError(`Cross-origin URL: "${path}"`);
+		}
+		if (
+			!/^([a-z][a-z\d+.-]*:)?\/\//i.test(path) &&
+			url.pathname !== basePath &&
+			!url.pathname.startsWith(`${basePath}/`)
+		) {
+			url.pathname = basePath + url.pathname;
 		}
 		if (searchParams) url.search = searchParams.toString();
 		return url.toString();
@@ -168,7 +178,6 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		url: string,
 		method: FetchMethod,
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
-		token: string | null,
 	): Promise<globalThis.Response> => {
 		const { body, headers, searchParams, ...restOptions } = options;
 
@@ -176,7 +185,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 			method,
 			headers: mergeHeaders(
 				{
-					...(body instanceof FormData
+					...(body == null || body instanceof FormData
 						? {}
 						: {
 								"Content-Type":
@@ -185,8 +194,10 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 										: "application/merge-patch+json",
 							}),
 					Accept: "application/ld+json",
-					...(token ? { Authorization: `Bearer ${token}` } : {}),
 				},
+				typeof config.headers === "function"
+					? await config.headers()
+					: config.headers,
 				headers,
 			),
 			body:
@@ -204,18 +215,14 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		method: FetchMethod,
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
 	): Promise<Out> => {
-		const token = (await config.getToken?.()) ?? null;
-		assertSafeToken(token);
+		let response = await doFetch<In>(url, method, options);
 
-		let response = await doFetch<In>(url, method, options, token);
-
-		if (response.status === 401 && config.refreshToken) {
-			refreshing ??= Promise.resolve(config.refreshToken()).finally(() => {
+		if (response.status === 401 && config.refreshAuth) {
+			refreshing ??= Promise.resolve(config.refreshAuth()).finally(() => {
 				refreshing = undefined;
 			});
-			const newToken = await refreshing;
-			assertSafeToken(newToken);
-			response = await doFetch<In>(url, method, options, newToken);
+			await refreshing;
+			response = await doFetch<In>(url, method, options);
 		}
 
 		if (!response.ok) {

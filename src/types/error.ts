@@ -1,6 +1,6 @@
 import type { HydraKeys, HydraPrefix } from "./register.ts";
 
-export type Error<S extends number> = {
+export type HydraError<S extends number> = {
 	"@id": `/errors/${S}`;
 	"@type": `${HydraPrefix}Error`;
 	detail: string;

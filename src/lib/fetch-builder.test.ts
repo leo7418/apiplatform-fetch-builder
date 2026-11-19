@@ -5,11 +5,10 @@ import { ApiError } from "./api-error.ts";
 import fetchBuilder from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
 
-const getToken = () => "some-complex-token";
 const onUnauthorized = mock.fn();
 
 const fetcher = fetchBuilder("https://example.com", {
-	getToken,
+	headers: { Authorization: "Bearer some-complex-token" },
 	onUnauthorized,
 });
 
@@ -381,7 +380,9 @@ describe("fetch-builder clone", () => {
 		};
 		global.fetch = spy;
 
-		const cloned = fetcher.clone({ getToken: () => "cloned-token" });
+		const cloned = fetcher.clone({
+			headers: { Authorization: "Bearer cloned-token" },
+		});
 		await cloned.get<object>("/test").fetch();
 	});
 
@@ -404,8 +405,8 @@ describe("fetch-builder clone", () => {
 	});
 });
 
-describe("fetch-builder refreshToken", () => {
-	test("refreshToken: should retry with new token on 401", async () => {
+describe("fetch-builder refreshAuth", () => {
+	test("refreshAuth: should retry with new token on 401", async () => {
 		let callCount = 0;
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
 			callCount++;
@@ -426,9 +427,12 @@ describe("fetch-builder refreshToken", () => {
 		};
 		global.fetch = spy;
 
+		let token = "expired-token";
 		const refreshFetcher = fetchBuilder("https://example.com", {
-			getToken: () => "expired-token",
-			refreshToken: () => "refreshed-token",
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth: () => {
+				token = "refreshed-token";
+			},
 		});
 
 		const result = await refreshFetcher.get<object>("/secure").fetch();
@@ -436,7 +440,7 @@ describe("fetch-builder refreshToken", () => {
 		assert.equal(callCount, 2);
 	});
 
-	test("refreshToken: should call onUnauthorized if retry also fails", async () => {
+	test("refreshAuth: should call onUnauthorized if retry also fails", async () => {
 		const onUnauthorizedMock = mock.fn();
 		const spy = async () =>
 			new Response(JSON.stringify({ detail: "Unauthorized" }), {
@@ -446,8 +450,8 @@ describe("fetch-builder refreshToken", () => {
 		global.fetch = spy;
 
 		const refreshFetcher = fetchBuilder("https://example.com", {
-			getToken: () => "expired-token",
-			refreshToken: () => "still-bad-token",
+			headers: { Authorization: "Bearer expired-token" },
+			refreshAuth: () => {},
 			onUnauthorized: onUnauthorizedMock,
 		});
 
@@ -458,8 +462,11 @@ describe("fetch-builder refreshToken", () => {
 		assert.equal(onUnauthorizedMock.mock.callCount(), 1);
 	});
 
-	test("refreshToken: should refresh once for concurrent 401 responses", async () => {
-		const refreshToken = mock.fn(async () => "refreshed-token");
+	test("refreshAuth: should refresh once for concurrent 401 responses", async () => {
+		let token = "expired-token";
+		const refreshAuth = mock.fn(async () => {
+			token = "refreshed-token";
+		});
 		global.fetch = async (_input, init) =>
 			new Headers(init?.headers).get("Authorization") === "Bearer expired-token"
 				? new Response(JSON.stringify({ detail: "Unauthorized" }), {
@@ -468,8 +475,8 @@ describe("fetch-builder refreshToken", () => {
 				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
 
 		const refreshFetcher = fetchBuilder("https://example.com", {
-			getToken: () => "expired-token",
-			refreshToken,
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth,
 		});
 
 		await Promise.all([
@@ -478,7 +485,7 @@ describe("fetch-builder refreshToken", () => {
 			refreshFetcher.get<object>("/third").fetch(),
 		]);
 
-		assert.equal(refreshToken.mock.callCount(), 1);
+		assert.equal(refreshAuth.mock.callCount(), 1);
 	});
 });
 
@@ -520,20 +527,9 @@ describe("fetch-builder security", () => {
 		);
 	});
 
-	test("assertSafeToken: should throw on token with whitespace", async () => {
+	test("headers: should reject a header value with a newline", async () => {
 		const unsafeFetcher = fetchBuilder("https://example.com", {
-			getToken: () => "bad token",
-		});
-
-		await assert.rejects(
-			() => unsafeFetcher.get<object>("/test").fetch(),
-			TypeError,
-		);
-	});
-
-	test("assertSafeToken: should throw on token with newline", async () => {
-		const unsafeFetcher = fetchBuilder("https://example.com", {
-			getToken: () => "bad\ntoken",
+			headers: { Authorization: "Bearer bad\ntoken" },
 		});
 
 		await assert.rejects(
@@ -555,5 +551,94 @@ describe("fetch-builder security", () => {
 			TypeError,
 		);
 		assert.equal(fetchMock.mock.callCount(), 0);
+	});
+});
+
+describe("fetch-builder config headers", () => {
+	test("headers: should call a function before each request and let the request override it", async () => {
+		let language = "fr";
+		const sent: (string | null)[][] = [];
+		global.fetch = async (_input, init) => {
+			const headers = new Headers(init?.headers);
+			sent.push([headers.get("Accept-Language"), headers.get("X-Tenant")]);
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		const localized = fetchBuilder("https://example.com", {
+			headers: async () => ({
+				"Accept-Language": language,
+				"X-Tenant": "acme",
+			}),
+		});
+
+		await localized.get<object>("/test").fetch();
+		language = "en";
+		await localized
+			.get<object>("/test")
+			.withHeaders({ "x-tenant": "other" })
+			.fetch();
+
+		assert.deepEqual(sent, [
+			["fr", "acme"],
+			["en", "other"],
+		]);
+	});
+
+	test("headers: should only send a Content-Type with a body", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(new Headers(init?.headers).get("Content-Type"), null);
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		await fetcher.get<object>("/test").fetch();
+	});
+});
+
+describe("fetch-builder entrypoint path", () => {
+	const urls: string[] = [];
+	const prefixed = fetchBuilder("https://example.com/api/");
+
+	test("should prepend the entrypoint path unless the path already has it", async () => {
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		await prefixed.get<object>("/users").fetch();
+		await prefixed.get<object>("users/1").fetch();
+		await prefixed.get<object>("/api/users/1").fetch();
+		await prefixed.get<object>("/api-keys?page=2").fetch();
+		await prefixed.get<object>("https://example.com/media/1").fetch();
+
+		assert.deepEqual(urls, [
+			"https://example.com/api/users",
+			"https://example.com/api/users/1",
+			"https://example.com/api/users/1",
+			"https://example.com/api/api-keys?page=2",
+			"https://example.com/media/1",
+		]);
+	});
+});
+
+describe("fetch-builder default GET options", () => {
+	test("should only send the options that are set", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ items: [] }), { status: 200 });
+		};
+
+		const builder = fetcher.get<{ items: object[] }>("/items");
+		await builder.withOptions({ sortBy: [{ id: "name", desc: true }] }).fetch();
+		await builder.withOptions({ pageSize: 50 }).fetch();
+		await builder
+			.withOptions({ filters: [{ id: "active", value: true }] })
+			.fetch();
+
+		assert.deepEqual(urls, [
+			"https://example.com/items?order%5Bname%5D=DESC",
+			"https://example.com/items?itemsPerPage=50",
+			"https://example.com/items?active=true",
+		]);
 	});
 });

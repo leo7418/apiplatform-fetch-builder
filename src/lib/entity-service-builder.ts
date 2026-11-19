@@ -1,6 +1,6 @@
 import fetchBuilder, { type GetOptions } from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
-import type { Iri } from "../types/iri.ts";
+import type { AnyIri, IriId } from "../types/iri.ts";
 import type { Item } from "../types/item.ts";
 import type { PropertyPath } from "../types/property-path.ts";
 import type { PropertyValue } from "../types/property-value.ts";
@@ -16,19 +16,19 @@ export type OnProgress = (
 	progress: GetAllPagesProgress,
 ) => boolean | void | Promise<boolean | void>;
 
-type ObjectWithId<T extends object, I extends Iri<string>> = T &
-	({ "@id": I; id?: never } | { "@id"?: never; id: number });
+type ObjectWithId<T extends object, I extends AnyIri> = T &
+	({ "@id": I; id?: never } | { "@id"?: never; id: IriId<I> });
 
 type EntityService<
-	EntityIri extends Iri<string>,
+	EntityIri extends AnyIri,
 	EntityBody extends object,
 	Entity extends object,
 > = {
 	create: (body: EntityBody) => Promise<Item<Entity, EntityIri>>;
 	get: {
-		(iriOrId: EntityIri | number): Promise<Item<Entity, EntityIri>>;
+		(iriOrId: EntityIri | IriId<EntityIri>): Promise<Item<Entity, EntityIri>>;
 		<P extends PropertyPath<Item<Entity, EntityIri>>[]>(
-			iriOrId: EntityIri | number,
+			iriOrId: EntityIri | IriId<EntityIri>,
 			getOptions: GetOptions<Item<Entity, EntityIri>, P>,
 		): Promise<PropertyValue<Item<Entity, EntityIri>, P[number]>>;
 	};
@@ -43,7 +43,7 @@ type EntityService<
 			body: ObjectWithId<Partial<EntityBody>, EntityIri>,
 		): Promise<Item<Entity, EntityIri>>;
 		(
-			idOrIri: EntityIri | number,
+			idOrIri: EntityIri | IriId<EntityIri>,
 			body: Partial<EntityBody>,
 		): Promise<Item<Entity, EntityIri>>;
 	};
@@ -52,7 +52,7 @@ type EntityService<
 			body: ObjectWithId<EntityBody, EntityIri>,
 		): Promise<Item<Entity, EntityIri>>;
 		(
-			idOrIri: EntityIri | number,
+			idOrIri: EntityIri | IriId<EntityIri>,
 			body: EntityBody,
 		): Promise<Item<Entity, EntityIri>>;
 	};
@@ -69,11 +69,11 @@ type EntityService<
 			onProgress?: OnProgress,
 		): Promise<Collection<Entity, EntityIri>>;
 	};
-	delete: (idOrIri: EntityIri | number) => Promise<null>;
+	delete: (idOrIri: EntityIri | IriId<EntityIri>) => Promise<null>;
 };
 
 const entityServiceBuilder = <
-	EntityIri extends Iri<string>,
+	EntityIri extends AnyIri,
 	EntityBody extends object,
 	Entity extends object,
 >(
@@ -93,14 +93,16 @@ const entityServiceBuilder = <
 				? fetchBuilder(fetchOptions.entrypoint, fetchOptions.config)
 				: fetchOptions;
 
-	const parseIri = (iriOrId: EntityIri | number): EntityIri | string =>
-		typeof iriOrId === "number" ? `${entityPath}/${iriOrId}` : iriOrId;
+	const parseIri = (iriOrId: EntityIri | IriId<EntityIri>): string =>
+		typeof iriOrId === "string" && iriOrId.startsWith("/")
+			? iriOrId
+			: `${entityPath}/${iriOrId}`;
 
 	const create = (body: EntityBody) =>
 		fetcher.post<Item<Entity, EntityIri>, EntityBody>(entityPath).fetch(body);
 
 	const get = <P extends PropertyPath<Item<Entity, EntityIri>>[]>(
-		iriOrId: EntityIri | number,
+		iriOrId: EntityIri | IriId<EntityIri>,
 		getOptions?: GetOptions<Item<Entity, EntityIri>, P>,
 	) => {
 		const builder = fetcher.get<Item<Entity, EntityIri>>(parseIri(iriOrId));
@@ -134,12 +136,15 @@ const entityServiceBuilder = <
 			.patch<
 				Item<Entity, EntityIri>,
 				Partial<EntityBody>
-			>(parseIri(iri as EntityIri | number))
+			>(parseIri(iri as EntityIri | IriId<EntityIri>))
 			.fetch(body);
 	};
 
 	const replace = (
-		idOrIriOrBody: ObjectWithId<EntityBody, EntityIri> | EntityIri | number,
+		idOrIriOrBody:
+			| ObjectWithId<EntityBody, EntityIri>
+			| EntityIri
+			| IriId<EntityIri>,
 		maybeBody?: EntityBody,
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
@@ -243,7 +248,7 @@ const entityServiceBuilder = <
 		return collection as Collection<Entity, EntityIri>;
 	};
 
-	const del = (idOrIri: EntityIri | number) =>
+	const del = (idOrIri: EntityIri | IriId<EntityIri>) =>
 		fetcher.delete(parseIri(idOrIri)).fetch();
 
 	return {

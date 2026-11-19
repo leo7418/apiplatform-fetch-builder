@@ -1,8 +1,8 @@
-import type { Iri } from "./iri.ts";
+import type { AnyIri, Iri } from "./iri.ts";
 import type { Item } from "./item.ts";
 import type { HydraKeys, HydraPrefix } from "./register.ts";
 
-export type Collection<T, I extends Iri<string> = Iri<string>> = {
+export type Collection<T, I extends AnyIri = Iri<string>> = {
 	"@context": string;
 	"@id": string;
 	"@type": `${HydraPrefix}Collection`;

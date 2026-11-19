@@ -11,12 +11,11 @@ type EntityIri = Iri<"entities">;
 type EntityBody = { name: string };
 type Entity = EntityBody & { calculatedName?: string };
 
-const getToken = () => "some-complex-token";
 const entityPath = "/entities";
 
 const makeService = () => {
 	const fetcher = fetchBuilder("https://example.com", {
-		getToken,
+		headers: { Authorization: "Bearer some-complex-token" },
 		onUnauthorized: mock.fn() as () => void,
 	});
 	const entityService = entityServiceBuilder<EntityIri, EntityBody, Entity>(
@@ -593,5 +592,29 @@ describe("entityServiceBuilder", () => {
 		const result = await entityService.delete(iri);
 
 		assert.deepStrictEqual(result, null);
+	});
+
+	test("should build the IRI from a string identifier", async () => {
+		type BookIri = Iri<"books", string>;
+		const bookService = entityServiceBuilder<BookIri, EntityBody, Entity>(
+			"https://example.com",
+			"/books",
+		);
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({}), { status: 200 });
+		};
+
+		await bookService.get("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+		await bookService.get("/books/f47ac10b-58cc-4372-a567-0e02b2c3d479");
+		await bookService.update({ id: "the-hobbit", name: "The Hobbit" });
+
+		assert.deepStrictEqual(urls, [
+			"https://example.com/books/f47ac10b-58cc-4372-a567-0e02b2c3d479",
+			"https://example.com/books/f47ac10b-58cc-4372-a567-0e02b2c3d479",
+			"https://example.com/books/the-hobbit",
+		]);
 	});
 });
