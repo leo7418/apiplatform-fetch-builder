@@ -33,6 +33,24 @@ importers:
         specifier: ^8.58.0
         version: 8.58.0(eslint@10.1.0)(typescript@6.0.2)
 
+  examples/basic:
+    dependencies:
+      apiplatform-fetch-builder:
+        specifier: link:../../dist
+        version: link:../../dist
+
+  examples/entity-service-builder:
+    dependencies:
+      apiplatform-fetch-builder:
+        specifier: link:../../dist
+        version: link:../../dist
+
+  examples/hydra-prefix:
+    dependencies:
+      apiplatform-fetch-builder:
+        specifier: link:../../dist
+        version: link:../../dist
+
 packages:
 
   '@eslint-community/eslint-utils@4.9.1':

@@ -93,10 +93,18 @@ const entityServiceBuilder = <
 				? fetchBuilder(fetchOptions.entrypoint, fetchOptions.config)
 				: fetchOptions;
 
-	const parseIri = (iriOrId: EntityIri | IriId<EntityIri>): string =>
-		typeof iriOrId === "string" && /^(\/|[a-z][a-z\d+.-]*:\/\/)/i.test(iriOrId)
-			? iriOrId
-			: `${entityPath}/${iriOrId}`;
+	const parseIri = (iriOrId: EntityIri | IriId<EntityIri>): string => {
+		if (
+			typeof iriOrId === "string" &&
+			/^(\/|[a-z][a-z\d+.-]*:\/\/)/i.test(iriOrId)
+		) {
+			return iriOrId;
+		}
+		if (["", ".", ".."].includes(String(iriOrId))) {
+			throw new TypeError(`Invalid identifier: "${iriOrId}"`);
+		}
+		return `${entityPath}/${encodeURIComponent(iriOrId)}`;
+	};
 
 	const toBody = <T extends object>(body: T, keepId: boolean) =>
 		Object.getPrototypeOf(body) !== Object.prototype
@@ -105,7 +113,7 @@ const entityServiceBuilder = <
 					Object.entries(body).filter(
 						([key, value]) =>
 							!key.startsWith("@") &&
-							(key !== "id" || (keepId && value != null)),
+							(key !== "id" || (keepId && value != null && value !== "")),
 					),
 				) as T);
 
@@ -114,7 +122,7 @@ const entityServiceBuilder = <
 			.post<Item<Entity, EntityIri>, EntityBody>(entityPath)
 			.fetch(toBody(body, true));
 
-	const get = <P extends PropertyPath<Item<Entity, EntityIri>>[]>(
+	const get = async <P extends PropertyPath<Item<Entity, EntityIri>>[]>(
 		iriOrId: EntityIri | IriId<EntityIri>,
 		getOptions?: GetOptions<Item<Entity, EntityIri>, P>,
 	) => {
@@ -133,7 +141,7 @@ const entityServiceBuilder = <
 			: builder.fetch();
 	};
 
-	const update = (
+	const update = async (
 		idOrIriOrBody:
 			| ObjectWithId<Partial<EntityBody>, EntityIri>
 			| EntityIri
@@ -156,7 +164,7 @@ const entityServiceBuilder = <
 			.fetch(body);
 	};
 
-	const replace = (
+	const replace = async (
 		idOrIriOrBody:
 			| ObjectWithId<EntityBody, EntityIri>
 			| EntityIri
@@ -184,7 +192,7 @@ const entityServiceBuilder = <
 			(body as ObjectWithId<Partial<EntityBody>, EntityIri>)["@id"] ??
 			(body as ObjectWithId<Partial<EntityBody>, EntityIri>).id;
 
-		return id == null
+		return id == null || id === ""
 			? create(body as EntityBody)
 			: update(body as ObjectWithId<Partial<EntityBody>, EntityIri>);
 	};
@@ -227,6 +235,7 @@ const entityServiceBuilder = <
 		const totalItems = probe[`${prefix}totalItems`] as number | undefined;
 
 		const members: unknown[] = [];
+		const followed = new Set<string>();
 		let page = 0;
 		let next: string | undefined;
 		let hasMore = totalItems !== 0;
@@ -248,12 +257,16 @@ const entityServiceBuilder = <
 				| undefined;
 			if (pageMembers.length === 0) break;
 
-			members.push(...pageMembers);
+			pageMembers.forEach((member) => members.push(member));
 			page++;
 			next = view?.[`${prefix}next`] as string | undefined;
 			hasMore =
-				next !== undefined ||
-				(totalItems !== undefined && members.length < totalItems);
+				next === undefined
+					? totalItems !== undefined && members.length < totalItems
+					: !followed.has(next);
+			if (next !== undefined) {
+				followed.add(next);
+			}
 
 			shouldContinue = await onProgress?.({
 				page,
@@ -275,7 +288,7 @@ const entityServiceBuilder = <
 		return collection as Collection<Entity, EntityIri>;
 	};
 
-	const del = (idOrIri: EntityIri | IriId<EntityIri>) =>
+	const del = async (idOrIri: EntityIri | IriId<EntityIri>) =>
 		fetcher.delete(parseIri(idOrIri)).fetch();
 
 	return {

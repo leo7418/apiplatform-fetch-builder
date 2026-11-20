@@ -11,26 +11,17 @@ import type {
 	UnionToIntersection,
 } from "./utils.ts";
 
-type HaveIri<T> = Exclude<GetIri<T>, never>;
-type KeepIri<T> = T extends unknown ? GetIri<T> : never;
-
 type NonEmptyObject<T> = T extends object
 	? IsEmptyObject<T> extends true
 		? never
 		: T
 	: never;
 
-type MayBeOptional<I, O> = undefined extends I ? O | undefined : O;
-
-type ItemOrIri<T> =
-	HaveIri<T> extends never
-		? T
-		: MayBeOptional<
-				T,
-				NonEmptyObject<T> extends never
-					? KeepIri<T>
-					: Item<NonEmptyObject<T>, Exclude<GetIri<T>, never>>
-			>;
+type ItemOrIri<T> = [GetIri<T>] extends [never]
+	? T
+	: [NonEmptyObject<T>] extends [never]
+		? Exclude<T, object>
+		: Item<NonEmptyObject<T>, GetIri<T>> | Exclude<T, object | GetIri<T>>;
 
 type DeepPick<T, K extends string> = ItemOrIri<
 	T extends object

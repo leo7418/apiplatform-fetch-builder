@@ -6,8 +6,12 @@ export class ApiError extends Error {
 	/** Parsed JSON body of the error response, or its raw text when it is not JSON. */
 	readonly body: unknown;
 
-	constructor(status: number, body: unknown) {
-		super(`Request failed with status ${status}`);
+	constructor(
+		status: number,
+		body: unknown,
+		message = `Request failed with status ${status}`,
+	) {
+		super(message);
 		this.name = "ApiError";
 		this.status = status;
 		this.body = body;
@@ -18,5 +22,5 @@ export const isHydraError = (body: unknown): body is HydraError =>
 	isObject(body) &&
 	"@type" in body &&
 	typeof body["@type"] === "string" &&
-	"title" in body &&
-	typeof body.title === "string";
+	(("title" in body && typeof body.title === "string") ||
+		("hydra:title" in body && typeof body["hydra:title"] === "string"));

@@ -153,6 +153,28 @@ describe("fetch-builder tests methods", () => {
 		assert.equal(onUnauthorized.mock.callCount(), 1);
 	});
 
+	test("Error handling: should throw an ApiError when an OK response is not JSON", async () => {
+		global.fetch = async () =>
+			new Response("<html>Maintenance</html>", { status: 200 });
+
+		await assert.rejects(() => fetcher.get<object>("/test").fetch(), {
+			name: "ApiError",
+			message: "Response is not JSON",
+			status: 200,
+			body: "<html>Maintenance</html>",
+		});
+	});
+
+	test("Error handling: should throw an ApiError when a GET response has no body", async () => {
+		global.fetch = async () => new Response(null, { status: 204 });
+
+		await assert.rejects(() => fetcher.get<object>("/test").fetch(), {
+			name: "ApiError",
+			status: 204,
+			body: "",
+		});
+	});
+
 	test("Error handling: should keep a non-JSON error body as text", async () => {
 		global.fetch = async () =>
 			new Response("<html>Bad Gateway</html>", { status: 502 });
@@ -199,6 +221,17 @@ describe("fetch-builder isHydraError", () => {
 			false,
 		);
 		assert.equal(isHydraError("<html>Bad Gateway</html>"), false);
+	});
+
+	test("should accept an error that only carries the prefixed title", () => {
+		assert.ok(
+			isHydraError({
+				"@type": "ConstraintViolationList",
+				"hydra:title": "An error occurred",
+				"hydra:description": "name: This value should not be blank.",
+				violations: [],
+			}),
+		);
 	});
 });
 
@@ -491,6 +524,22 @@ describe("fetch-builder refreshAuth", () => {
 		assert.equal(callCount, 2);
 	});
 
+	test("refreshAuth: should release the 401 response before the retry", async () => {
+		const responses = [
+			new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 }),
+			new Response(JSON.stringify({ data: "ok" }), { status: 200 }),
+		];
+		const [unauthorized] = responses;
+		global.fetch = async () => responses.shift()!;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: () => {},
+		});
+
+		await refreshFetcher.get<object>("/secure").fetch();
+		assert.equal(unauthorized.bodyUsed, true);
+	});
+
 	test("refreshAuth: should call onUnauthorized if retry also fails", async () => {
 		const onUnauthorizedMock = mock.fn();
 		const spy = async () =>
@@ -537,6 +586,94 @@ describe("fetch-builder refreshAuth", () => {
 		]);
 
 		assert.equal(refreshAuth.mock.callCount(), 1);
+	});
+
+	test("refreshAuth: should not refresh again for a 401 received after the refresh", async () => {
+		let token = "expired-token";
+		const refreshAuth = mock.fn(async () => {
+			token = "refreshed-token";
+		});
+		global.fetch = async (input, init) => {
+			if (
+				new Headers(init?.headers).get("Authorization") !==
+				"Bearer expired-token"
+			) {
+				return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+			}
+			if (input.toString().endsWith("/slow")) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			return new Response(JSON.stringify({ detail: "Unauthorized" }), {
+				status: 401,
+			});
+		};
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth,
+		});
+
+		const results = await Promise.all([
+			refreshFetcher.get<object>("/fast").fetch(),
+			refreshFetcher.get<object>("/slow").fetch(),
+		]);
+
+		assert.deepEqual(results, [{ data: "ok" }, { data: "ok" }]);
+		assert.equal(refreshAuth.mock.callCount(), 1);
+	});
+
+	test("refreshAuth: should share the refresh with a clone", async () => {
+		let token = "expired-token";
+		const refreshAuth = mock.fn(async () => {
+			token = "refreshed-token";
+		});
+		global.fetch = async (_input, init) =>
+			new Headers(init?.headers).get("Authorization") === "Bearer expired-token"
+				? new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					})
+				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth,
+		});
+		const tenantFetcher = refreshFetcher.clone({
+			headers: { "X-Tenant": "acme" },
+		});
+
+		await Promise.all([
+			refreshFetcher.get<object>("/first").fetch(),
+			tenantFetcher.get<object>("/second").fetch(),
+		]);
+
+		assert.equal(refreshAuth.mock.callCount(), 1);
+	});
+
+	test("refreshAuth: should call onUnauthorized when the refresh fails", async () => {
+		const onUnauthorizedMock = mock.fn();
+		const fetchMock = mock.fn(
+			async () =>
+				new Response(JSON.stringify({ detail: "Unauthorized" }), {
+					status: 401,
+				}),
+		);
+		global.fetch = fetchMock;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: async () => {
+				throw new Error("Refresh token expired");
+			},
+			onUnauthorized: onUnauthorizedMock,
+		});
+
+		await assert.rejects(() => refreshFetcher.get<object>("/secure").fetch(), {
+			name: "ApiError",
+			status: 401,
+			body: { detail: "Unauthorized" },
+		});
+		assert.equal(onUnauthorizedMock.mock.callCount(), 1);
+		assert.equal(fetchMock.mock.callCount(), 1);
 	});
 });
 
@@ -588,6 +725,23 @@ describe("fetch-builder security", () => {
 
 		await assert.rejects(
 			() => unsafeFetcher.get<object>("/test").fetch(),
+			TypeError,
+		);
+	});
+
+	test("headers: should reject an invalid header passed to a request", async () => {
+		const headers = { "X-User": "名前" };
+
+		await assert.rejects(
+			() => fetcher.get<object>("/test").fetch({ headers }),
+			TypeError,
+		);
+		await assert.rejects(
+			() => fetcher.post<object, object>("/test").fetch({}, { headers }),
+			TypeError,
+		);
+		await assert.rejects(
+			() => fetcher.delete("/test").fetch({ headers }),
 			TypeError,
 		);
 	});
@@ -677,6 +831,46 @@ describe("fetch-builder request body", () => {
 		};
 
 		await fetcher.post<object, Blob>("/media").fetch(blob);
+	});
+
+	test("should send a stream as it is", async () => {
+		const stream = new Blob(["abc"]).stream();
+		global.fetch = async (_input, init) => {
+			assert.equal(init?.body, stream);
+			assert.equal((init as { duplex?: string }).duplex, "half");
+			assert.equal(new Headers(init?.headers).get("Content-Type"), null);
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		await fetcher.post<object, ReadableStream>("/media").fetch(stream);
+	});
+
+	test("should not send a stream again after a refresh", async () => {
+		const refreshAuth = mock.fn();
+		const onUnauthorizedMock = mock.fn();
+		const fetchMock = mock.fn(
+			async () =>
+				new Response(JSON.stringify({ detail: "Unauthorized" }), {
+					status: 401,
+				}),
+		);
+		global.fetch = fetchMock;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth,
+			onUnauthorized: onUnauthorizedMock,
+		});
+
+		await assert.rejects(
+			() =>
+				refreshFetcher
+					.post<object, ReadableStream>("/media")
+					.fetch(new Blob(["abc"]).stream()),
+			{ name: "ApiError", status: 401 },
+		);
+		assert.equal(refreshAuth.mock.callCount(), 1);
+		assert.equal(fetchMock.mock.callCount(), 1);
+		assert.equal(onUnauthorizedMock.mock.callCount(), 0);
 	});
 });
 

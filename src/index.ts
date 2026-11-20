@@ -11,6 +11,7 @@ export type * from "./types/register.ts";
 export type * from "./types/utils.ts";
 export type {
 	BuilderConfig,
+	Fetcher,
 	FetchOptions,
 	GetOptions,
 } from "./lib/fetch-builder.ts";

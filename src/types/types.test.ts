@@ -153,6 +153,29 @@ describe("types", () => {
 		assert.equal(company, "/api/companies/acme");
 	});
 
+	test("selected properties should keep null and unrelated values", () => {
+		type Task = {
+			manager: UserIri | null;
+			company: Company | CompanyIri | null;
+			route: "/" | "/users" | "/users/list";
+		};
+		type Tasks = Collection<Task, Iri<"api/tasks">>;
+		type Selected<P extends PropertyPath<Tasks>> = PropertyValue<
+			Tasks,
+			P
+		>["member"][number];
+
+		const checks: [
+			Equal<Selected<"manager">["manager"], UserIri | null>,
+			Equal<Selected<"company">["company"], CompanyIri | null>,
+			Equal<Selected<"route">["route"], "/" | "/users" | "/users/list">,
+			null extends Selected<"company.name">["company"] ? true : false,
+			Equal<NonNullable<Selected<"company.name">["company"]>["name"], string>,
+		] = [true, true, true, true, true];
+
+		assert.ok(checks.every(Boolean));
+	});
+
 	test("absolute IRIs should behave like path IRIs", async () => {
 		const urls: string[] = [];
 		global.fetch = async (input) => {

@@ -67,9 +67,64 @@ export type BuilderConfig = Omit<RequestInit, "method" | "body" | "headers"> & {
 	headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
 	/** Called on a 401 response; the request is then retried once with fresh headers. */
 	refreshAuth?: () => void | Promise<void>;
-	/** Called when the response is still a 401 after the retry, or when there is no `refreshAuth`. */
+	/** Called when the response is still a 401 after the retry, when `refreshAuth` fails, or when there is no `refreshAuth`. */
 	onUnauthorized?: () => void | Promise<void>;
 };
+
+type GetOptionsBuilder<Out extends object, P extends PropertyPath<Out>[]> = {
+	fetch: (options?: FetchOptions) => Promise<PropertyValue<Out, P[number]>>;
+	fetchRaw: (options?: FetchOptions) => Promise<Response>;
+	withHeaders: (headers: HeadersInit) => GetOptionsBuilder<Out, P>;
+};
+
+type GetBuilder<Out extends object> = {
+	fetch: (options?: FetchOptions) => Promise<Out>;
+	fetchRaw: (options?: FetchOptions) => Promise<Response>;
+	withHeaders: (headers: HeadersInit) => GetBuilder<Out>;
+	withOptions: <P extends PropertyPath<Out>[]>(
+		getOptions: GetOptions<Out, P>,
+	) => GetOptionsBuilder<Out, P>;
+};
+
+type BodyBuilder<Out extends object | null, In> = {
+	fetch: (options?: FetchOptions<In>) => Promise<Out>;
+	fetchRaw: (options?: FetchOptions<In>) => Promise<Response>;
+	withHeaders: (headers: HeadersInit) => BodyBuilder<Out, In>;
+};
+
+type MutationBuilder<Out extends object | null, In> = {
+	fetch: (body: In, options?: FetchOptions<In>) => Promise<Out>;
+	fetchRaw: (body: In, options?: FetchOptions<In>) => Promise<Response>;
+	withHeaders: (headers: HeadersInit) => MutationBuilder<Out, In>;
+	withBody: (body: In) => BodyBuilder<Out, In>;
+};
+
+type DeleteBuilder = {
+	fetch: (options?: FetchOptions) => Promise<null>;
+	withHeaders: (headers: HeadersInit) => DeleteBuilder;
+};
+
+type Mutation = <Out extends object | null, In>(
+	url: string,
+	headers?: HeadersInit,
+) => MutationBuilder<Out, In>;
+
+export type Fetcher = {
+	get: <Out extends object>(
+		url: string,
+		headers?: HeadersInit,
+	) => GetBuilder<Out>;
+	post: Mutation;
+	patch: Mutation;
+	put: Mutation;
+	delete: (url: string, headers?: HeadersInit) => DeleteBuilder;
+	clone: (overrides?: Partial<BuilderConfig>) => Fetcher;
+};
+
+const refreshes = new WeakMap<
+	NonNullable<BuilderConfig["refreshAuth"]>,
+	{ count: number; pending?: Promise<boolean> }
+>();
 
 const assertSafeKey = (key: string, context: string) => {
 	if (!/^[\w.-]+$/.test(key)) {
@@ -93,7 +148,8 @@ const isRawBody = (body: unknown): body is BodyInit =>
 	body instanceof Blob ||
 	body instanceof URLSearchParams ||
 	body instanceof ArrayBuffer ||
-	ArrayBuffer.isView(body);
+	ArrayBuffer.isView(body) ||
+	body instanceof ReadableStream;
 
 const parseErrorBody = (text: string): unknown => {
 	try {
@@ -166,7 +222,10 @@ const buildGetOptions = ({
 	return searchParams;
 };
 
-const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
+const fetchBuilder = (
+	entrypoint: string,
+	config: BuilderConfig = {},
+): Fetcher => {
 	const {
 		originAliases = [],
 		headers: commonHeaders,
@@ -175,7 +234,10 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		...init
 	} = config;
 	const aliasOrigins = originAliases.map((alias) => new URL(alias).origin);
-	let refreshing: Promise<void> | undefined;
+	const refresh = refreshAuth && (refreshes.get(refreshAuth) ?? { count: 0 });
+	if (refresh) {
+		refreshes.set(refreshAuth, refresh);
+	}
 
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
 		const base = new URL(entrypoint);
@@ -230,6 +292,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 					: isRawBody(body)
 						? body
 						: JSON.stringify(body),
+			...(body instanceof ReadableStream && { duplex: "half" }),
 			...restOptions,
 		});
 	};
@@ -239,14 +302,33 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		method: FetchMethod,
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
 	): Promise<globalThis.Response> => {
+		const refreshCount = refresh?.count;
 		let response = await doFetch<In>(url, method, options);
 
-		if (response.status === 401 && refreshAuth) {
-			refreshing ??= Promise.resolve(refreshAuth()).finally(() => {
-				refreshing = undefined;
-			});
-			await refreshing;
-			response = await doFetch<In>(url, method, options);
+		if (response.status === 401 && refresh) {
+			let refreshed = refresh.count !== refreshCount;
+			if (!refreshed) {
+				refresh.pending ??= Promise.resolve()
+					.then(refreshAuth)
+					.then(
+						() => {
+							refresh.count++;
+							return true;
+						},
+						() => false,
+					)
+					.finally(() => {
+						refresh.pending = undefined;
+					});
+				refreshed = await refresh.pending;
+			}
+			if (refreshed && options.body instanceof ReadableStream) {
+				throw new ApiError(401, parseErrorBody(await response.text()));
+			}
+			if (refreshed) {
+				await response.body?.cancel();
+				response = await doFetch<In>(url, method, options);
+			}
 		}
 
 		if (!response.ok) {
@@ -271,16 +353,26 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		const response = await send<In>(url, method, options);
 		const text = method === "DELETE" ? "" : await response.text();
 
-		return (text === "" ? null : JSON.parse(text)) as Out;
+		if (text === "" && method !== "GET") {
+			return null as Out;
+		}
+		try {
+			return JSON.parse(text) as Out;
+		} catch {
+			throw new ApiError(response.status, text, "Response is not JSON");
+		}
 	};
 
-	const get = <Out extends object>(url: string, headers?: HeadersInit) => ({
-		fetch: (options?: FetchOptions) =>
+	const get = <Out extends object>(
+		url: string,
+		headers?: HeadersInit,
+	): GetBuilder<Out> => ({
+		fetch: async (options?: FetchOptions) =>
 			request<Out>(url, "GET", {
 				...options,
 				headers: mergeHeaders(headers, options?.headers),
 			}),
-		fetchRaw: (options?: FetchOptions) =>
+		fetchRaw: async (options?: FetchOptions) =>
 			send(url, "GET", {
 				...options,
 				headers: mergeHeaders(headers, options?.headers),
@@ -310,14 +402,14 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		method: "POST" | "PATCH" | "PUT",
 		url: string,
 		headers?: HeadersInit,
-	) => ({
-		fetch: (body: In, options?: FetchOptions<In>) =>
+	): MutationBuilder<Out, In> => ({
+		fetch: async (body: In, options?: FetchOptions<In>) =>
 			request<Out, In>(url, method, {
 				...options,
 				headers: mergeHeaders(headers, options?.headers),
 				body,
 			}),
-		fetchRaw: (body: In, options?: FetchOptions<In>) =>
+		fetchRaw: async (body: In, options?: FetchOptions<In>) =>
 			send<In>(url, method, {
 				...options,
 				headers: mergeHeaders(headers, options?.headers),
@@ -326,13 +418,13 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		withHeaders: (h: HeadersInit) =>
 			makeMutationBuilder<Out, In>(method, url, mergeHeaders(headers, h)),
 		withBody: (b: In) => ({
-			fetch: (options?: FetchOptions<In>) =>
+			fetch: async (options?: FetchOptions<In>) =>
 				request<Out, In>(url, method, {
 					...options,
 					headers: mergeHeaders(headers, options?.headers),
 					body: b,
 				}),
-			fetchRaw: (options?: FetchOptions<In>) =>
+			fetchRaw: async (options?: FetchOptions<In>) =>
 				send<In>(url, method, {
 					...options,
 					headers: mergeHeaders(headers, options?.headers),
@@ -362,8 +454,8 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		headers?: HeadersInit,
 	) => makeMutationBuilder<Out, In>("PUT", url, headers);
 
-	const del = (url: string, headers?: HeadersInit) => ({
-		fetch: (options?: FetchOptions) =>
+	const del = (url: string, headers?: HeadersInit): DeleteBuilder => ({
+		fetch: async (options?: FetchOptions) =>
 			request<null>(url, "DELETE", {
 				...options,
 				headers: mergeHeaders(headers, options?.headers),
@@ -371,7 +463,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 		withHeaders: (h: HeadersInit) => del(url, mergeHeaders(headers, h)),
 	});
 
-	const clone = (overrides: Partial<BuilderConfig> = {}) =>
+	const clone = (overrides: Partial<BuilderConfig> = {}): Fetcher =>
 		fetchBuilder(entrypoint, {
 			...config,
 			...overrides,

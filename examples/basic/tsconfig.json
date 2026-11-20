@@ -6,10 +6,7 @@
 		"verbatimModuleSyntax": true,
 		"target": "esnext",
 		"module": "NodeNext",
-		"noEmit": true,
-		"paths": {
-			"apiplatform-fetch-builder": ["../../src/index.ts"]
-		}
+		"noEmit": true
 	},
 	"include": ["./**/*.ts"]
 }

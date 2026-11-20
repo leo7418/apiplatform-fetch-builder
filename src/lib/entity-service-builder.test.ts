@@ -627,6 +627,41 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
+	test("upsert: should call create when body has an empty id", async () => {
+		const { entityService } = makeService();
+		const response = makeItem(1, "New Entity");
+
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}`);
+			assert.equal(init?.method, "POST");
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "New Entity",
+			});
+			return new Response(JSON.stringify(response), { status: 201 });
+		};
+
+		const result = await entityService.upsert({
+			id: "",
+			name: "New Entity",
+		} as unknown as EntityBody);
+
+		assert.deepStrictEqual(result, response);
+	});
+
+	test("getAllPages: should read a page of any size", async () => {
+		const { entityService } = makeService();
+		const member = Array.from({ length: 200_000 }, (_, id) => ({ id }));
+
+		global.fetch = async () =>
+			new Response(JSON.stringify({ member, totalItems: member.length }), {
+				status: 200,
+			});
+
+		const result = await entityService.getAllPages();
+
+		assert.equal(result.member.length, 200_000);
+	});
+
 	test("getAllPages: should follow the next page when the collection has no total", async () => {
 		const { entityService } = makeService();
 		const allMembers = [1, 2, 3, 4, 5].map((id) =>
@@ -707,6 +742,27 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(callCount, 2);
 	});
 
+	test("getAllPages: should stop when the next page was already followed", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			return new Response(
+				JSON.stringify({
+					member: [makeItem(callCount, "A")],
+					view: { next: `${entityPath}?page=2` },
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.strictEqual(result.member.length, 2);
+		assert.strictEqual(callCount, 3);
+	});
+
 	test("getAllPages: should read a collection with the hydra: prefix", async () => {
 		const { entityService } = makeService();
 		const allMembers = [makeItem(1, "A"), makeItem(2, "B"), makeItem(3, "C")];
@@ -779,5 +835,48 @@ describe("entityServiceBuilder", () => {
 			"https://example.com/books/f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			"https://example.com/books/the-hobbit",
 		]);
+	});
+
+	test("should encode a string identifier", async () => {
+		const bookService = entityServiceBuilder<
+			Iri<"books", string>,
+			EntityBody,
+			Entity
+		>("https://example.com/api", "/books");
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({}), { status: 200 });
+		};
+
+		await bookService.get("c#");
+		await bookService.get("what?");
+		await bookService.delete("../users/1");
+
+		assert.deepStrictEqual(urls, [
+			"https://example.com/api/books/c%23",
+			"https://example.com/api/books/what%3F",
+			"https://example.com/api/books/..%2Fusers%2F1",
+		]);
+	});
+
+	test("should reject an identifier that cannot be a path segment", async () => {
+		const bookService = entityServiceBuilder<
+			Iri<"books", string>,
+			EntityBody,
+			Entity
+		>("https://example.com/api", "/books");
+		const fetchMock = mock.fn(async () => new Response("{}"));
+		global.fetch = fetchMock;
+
+		await assert.rejects(() => bookService.get(""), TypeError);
+		await assert.rejects(() => bookService.delete("."), TypeError);
+		await assert.rejects(() => bookService.delete(".."), TypeError);
+		await assert.rejects(
+			() => bookService.update("", { name: "The Hobbit" }),
+			TypeError,
+		);
+		assert.equal(fetchMock.mock.callCount(), 0);
 	});
 });

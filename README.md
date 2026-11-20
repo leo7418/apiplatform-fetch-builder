@@ -123,7 +123,7 @@ if (error instanceof ApiError && isHydraError(error.body)) {
 }
 ```
 
-A response without a body (204, `DELETE`) resolves with `null`. A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API. When the API writes its IRIs with another origin than the one you call (behind a proxy, for instance), list it in `originAliases`: these URLs are then sent to the entrypoint.
+A `POST`, `PATCH`, `PUT` or `DELETE` response without a body (204) resolves with `null`. An OK response that is not JSON, or a `GET` response without a body, rejects with an `ApiError` too: read it with [`fetchRaw()`](#file-downloads). A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API. When the API writes its IRIs with another origin than the one you call (behind a proxy, for instance), list it in `originAliases`: these URLs are then sent to the entrypoint.
 
 ## File downloads
 
@@ -158,7 +158,7 @@ declare module "apiplatform-fetch-builder" {
 }
 ```
 
-`Collection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
+`Collection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:title`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
 
 ## `entityServiceBuilder`
 
@@ -262,11 +262,11 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 | `entrypoint` | `string` | Base URL of the API. Its path is prepended to every path that does not already start with it, so `/users` and the IRI `/api/users/1` both work with `https://api.example.com/api` |
 | `config.originAliases` | `string[]` | Other origins the API uses in its IRIs. A request to one of them is sent to the entrypoint instead |
 | `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request. `withHeaders` and `fetch({ headers })` override them |
-| `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call. Call the authentication endpoints with a fetcher that has no hooks: `api.clone({ refreshAuth: undefined, onUnauthorized: undefined })` |
-| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after the retry (or immediately if no `refreshAuth`) |
+| `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call, including across clones. If it rejects, the request is not retried. Call the authentication endpoints with a separate fetcher, which has neither the authentication headers nor these hooks: `fetchBuilder(entrypoint)` |
+| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on a 401 that remains after the retry, when `refreshAuth` rejects, or immediately if there is no `refreshAuth` |
 | `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`…) applies to every request; `fetch(options)` overrides it. |
 
-Returns `{ get, post, patch, put, delete, clone }`.
+Returns a `Fetcher`: `{ get, post, patch, put, delete, clone }`.
 
 ### `clone(overrides?)`
 
@@ -296,7 +296,7 @@ const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 | `.withBody(body)` | Pre-configures the body — returns a builder where `.fetch()` takes no body argument |
 | `.withHeaders(headers)` | Merges custom headers (chainable after `.withBody()`) |
 
-The body is sent as JSON. A `FormData`, `Blob`, `URLSearchParams` or binary buffer is sent as it is.
+The body is sent as JSON. A `FormData`, `Blob`, `URLSearchParams`, binary buffer or `ReadableStream` is sent as it is. A stream cannot be sent twice: after a 401, the authentication is refreshed but the request is not retried and rejects with the 401.
 
 ### `AbortSignal`
 
@@ -343,8 +343,10 @@ Only the options that are set are sent; the API defaults apply to the others.
 | `getAllPages(getOptions, onProgress?)` | Same with filters/sorting/pageSize |
 | `update(idOrIri, body)` or `update(bodyWithId)` | PATCH — the body is sent without `id` and the JSON-LD keys (`@id`, `@type`, `@context`) |
 | `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT — same rule for the body |
-| `upsert(body)` | POST if no id, PATCH if `@id` or `id` present |
+| `upsert(body)` | POST if there is no id (absent, `null` or empty), PATCH if `@id` or `id` is present |
 | `delete(idOrIri)` | DELETE |
+
+An identifier is URL-encoded into the path of the resource; an IRI is requested as it is.
 
 ## Recipes
 

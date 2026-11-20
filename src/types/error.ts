@@ -5,7 +5,7 @@ export type HydraError<S extends number = number> = {
 	"@type": string;
 	detail?: string;
 	status?: S;
-	title: string;
+	title?: string;
 	trace?: {
 		class: string;
 		file: string;
@@ -21,5 +21,5 @@ export type HydraError<S extends number = number> = {
 	}[];
 } & HydraKeys<{
 	description?: string;
-	title?: string;
+	title: string;
 }>;
