@@ -524,22 +524,6 @@ describe("fetch-builder refreshAuth", () => {
 		assert.equal(callCount, 2);
 	});
 
-	test("refreshAuth: should release the 401 response before the retry", async () => {
-		const responses = [
-			new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 }),
-			new Response(JSON.stringify({ data: "ok" }), { status: 200 }),
-		];
-		const [unauthorized] = responses;
-		global.fetch = async () => responses.shift()!;
-
-		const refreshFetcher = fetchBuilder("https://example.com", {
-			refreshAuth: () => {},
-		});
-
-		await refreshFetcher.get<object>("/secure").fetch();
-		assert.equal(unauthorized.bodyUsed, true);
-	});
-
 	test("refreshAuth: should call onUnauthorized if retry also fails", async () => {
 		const onUnauthorizedMock = mock.fn();
 		const spy = async () =>
@@ -588,38 +572,48 @@ describe("fetch-builder refreshAuth", () => {
 		assert.equal(refreshAuth.mock.callCount(), 1);
 	});
 
-	test("refreshAuth: should not refresh again for a 401 received after the refresh", async () => {
+	test("refreshAuth: should not share the refresh between separate fetchers", async () => {
 		let token = "expired-token";
 		const refreshAuth = mock.fn(async () => {
 			token = "refreshed-token";
 		});
-		global.fetch = async (input, init) => {
-			if (
-				new Headers(init?.headers).get("Authorization") !==
-				"Bearer expired-token"
-			) {
-				return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
-			}
-			if (input.toString().endsWith("/slow")) {
-				await new Promise((resolve) => setTimeout(resolve, 20));
-			}
-			return new Response(JSON.stringify({ detail: "Unauthorized" }), {
-				status: 401,
+		global.fetch = async (_input, init) =>
+			new Headers(init?.headers).get("Authorization") === "Bearer expired-token"
+				? new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					})
+				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+
+		const build = () =>
+			fetchBuilder("https://example.com", {
+				headers: () => ({ Authorization: `Bearer ${token}` }),
+				refreshAuth,
 			});
-		};
 
-		const refreshFetcher = fetchBuilder("https://example.com", {
-			headers: () => ({ Authorization: `Bearer ${token}` }),
-			refreshAuth,
-		});
-
-		const results = await Promise.all([
-			refreshFetcher.get<object>("/fast").fetch(),
-			refreshFetcher.get<object>("/slow").fetch(),
+		await Promise.all([
+			build().get<object>("/first").fetch(),
+			build().get<object>("/second").fetch(),
 		]);
 
-		assert.deepEqual(results, [{ data: "ok" }, { data: "ok" }]);
-		assert.equal(refreshAuth.mock.callCount(), 1);
+		assert.equal(refreshAuth.mock.callCount(), 2);
+	});
+
+	test("refreshAuth: should accept the same response object for the retry", async () => {
+		const unauthorized = new Response(
+			JSON.stringify({ detail: "Unauthorized" }),
+			{ status: 401 },
+		);
+		global.fetch = async () => unauthorized;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: () => {},
+		});
+
+		await assert.rejects(() => refreshFetcher.get<object>("/secure").fetch(), {
+			name: "ApiError",
+			status: 401,
+			body: { detail: "Unauthorized" },
+		});
 	});
 
 	test("refreshAuth: should share the refresh with a clone", async () => {
@@ -650,7 +644,71 @@ describe("fetch-builder refreshAuth", () => {
 		assert.equal(refreshAuth.mock.callCount(), 1);
 	});
 
-	test("refreshAuth: should call onUnauthorized when the refresh fails", async () => {
+	test("refreshAuth: should receive a fetcher without the headers and the hooks", async () => {
+		let token = "expired-token";
+		const refreshAuth = mock.fn();
+		const onUnauthorizedMock = mock.fn();
+		const refreshHeaders: (string | null)[] = [];
+		global.fetch = async (input, init) => {
+			const authorization = new Headers(init?.headers).get("Authorization");
+			if (input.toString().endsWith("/token/refresh")) {
+				refreshHeaders.push(authorization);
+				return new Response(JSON.stringify({ token: "refreshed-token" }));
+			}
+			return authorization === "Bearer refreshed-token"
+				? new Response(JSON.stringify({ data: "ok" }), { status: 200 })
+				: new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					});
+		};
+
+		const refreshFetcher = fetchBuilder("https://example.com/api", {
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth: async (auth) => {
+				refreshAuth();
+				const body = await auth
+					.post<{ token: string }, object>("/token/refresh")
+					.fetch({});
+				token = body.token;
+			},
+			onUnauthorized: onUnauthorizedMock,
+		});
+
+		const result = await refreshFetcher.get<object>("/secure").fetch();
+
+		assert.deepEqual(result, { data: "ok" });
+		assert.deepEqual(refreshHeaders, [null]);
+		assert.equal(refreshAuth.mock.callCount(), 1);
+		assert.equal(onUnauthorizedMock.mock.callCount(), 0);
+	});
+
+	test("refreshAuth: should not call onUnauthorized when the refresh fails for another reason", async () => {
+		const onUnauthorizedMock = mock.fn();
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Unauthorized" }), {
+				status: 401,
+			});
+
+		for (const failure of [
+			new TypeError("fetch failed"),
+			new ApiError(503, "Service Unavailable"),
+		]) {
+			const refreshFetcher = fetchBuilder("https://example.com", {
+				refreshAuth: async () => {
+					throw failure;
+				},
+				onUnauthorized: onUnauthorizedMock,
+			});
+
+			await assert.rejects(
+				() => refreshFetcher.get<object>("/secure").fetch(),
+				{ name: "ApiError", status: 401, cause: failure },
+			);
+		}
+		assert.equal(onUnauthorizedMock.mock.callCount(), 0);
+	});
+
+	test("refreshAuth: should call onUnauthorized when the API refuses the refresh", async () => {
 		const onUnauthorizedMock = mock.fn();
 		const fetchMock = mock.fn(
 			async () =>
@@ -660,9 +718,10 @@ describe("fetch-builder refreshAuth", () => {
 		);
 		global.fetch = fetchMock;
 
+		const failure = new ApiError(401, { detail: "Refresh token expired" });
 		const refreshFetcher = fetchBuilder("https://example.com", {
 			refreshAuth: async () => {
-				throw new Error("Refresh token expired");
+				throw failure;
 			},
 			onUnauthorized: onUnauthorizedMock,
 		});
@@ -671,6 +730,7 @@ describe("fetch-builder refreshAuth", () => {
 			name: "ApiError",
 			status: 401,
 			body: { detail: "Unauthorized" },
+			cause: failure,
 		});
 		assert.equal(onUnauthorizedMock.mock.callCount(), 1);
 		assert.equal(fetchMock.mock.callCount(), 1);
@@ -742,6 +802,19 @@ describe("fetch-builder security", () => {
 		);
 		await assert.rejects(
 			() => fetcher.delete("/test").fetch({ headers }),
+			TypeError,
+		);
+		await assert.rejects(
+			() => fetcher.get<object>("/test").withHeaders(headers).fetch(),
+			TypeError,
+		);
+		await assert.rejects(
+			() =>
+				fetcher.post<object, object>("/test").withHeaders(headers).fetch({}),
+			TypeError,
+		);
+		await assert.rejects(
+			() => fetcher.delete("/test").withHeaders(headers).fetch(),
 			TypeError,
 		);
 	});
@@ -831,6 +904,26 @@ describe("fetch-builder request body", () => {
 		};
 
 		await fetcher.post<object, Blob>("/media").fetch(blob);
+	});
+
+	test("should send requests where streams do not exist", async () => {
+		const bodies: unknown[] = [];
+		const responses = [new Response("{}"), new Response("{}")];
+		global.fetch = async (_input, init) => {
+			bodies.push(init?.body);
+			return responses.shift()!;
+		};
+		const { ReadableStream } = globalThis;
+		Reflect.deleteProperty(globalThis, "ReadableStream");
+
+		try {
+			await fetcher.get<object>("/test").fetch();
+			await fetcher.post<object, object>("/test").fetch({ name: "Alice" });
+		} finally {
+			globalThis.ReadableStream = ReadableStream;
+		}
+
+		assert.deepEqual(bodies, [undefined, '{"name":"Alice"}']);
 	});
 
 	test("should send a stream as it is", async () => {
@@ -982,6 +1075,32 @@ describe("fetch-builder originAliases", () => {
 		assert.deepEqual(urls, [
 			"https://example.com/api/users/1?page=2",
 			"https://example.com/api/users/1",
+		]);
+	});
+});
+
+describe("fetch-builder date filters", () => {
+	test("should send a date of a filter record as an ISO string", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ items: [] }), { status: 200 });
+		};
+
+		await fetcher
+			.get<{ items: object[] }>("/items")
+			.withOptions({
+				filters: [
+					{
+						id: "publishedAt",
+						value: { after: new Date("2020-01-01T00:00:00Z") },
+					},
+				],
+			})
+			.fetch();
+
+		assert.deepEqual(urls, [
+			"https://example.com/items?publishedAt%5Bafter%5D=2020-01-01T00%3A00%3A00.000Z",
 		]);
 	});
 });

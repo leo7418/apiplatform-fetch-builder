@@ -444,168 +444,6 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
-	test("getAllPages: should return empty collection when totalItems is 0", async () => {
-		const { entityService } = makeService();
-
-		global.fetch = async () =>
-			new Response(
-				JSON.stringify({
-					"@context": "",
-					"@type": "Collection",
-					"@id": entityPath,
-					member: [],
-					totalItems: 0,
-				} satisfies Collection<Entity, EntityIri>),
-				{ status: 200 },
-			);
-
-		const result = await entityService.getAllPages();
-
-		assert.deepStrictEqual(result.member, []);
-		assert.strictEqual(result.totalItems, 0);
-	});
-
-	test("getAllPages: should fetch all pages and concatenate members", async () => {
-		const { entityService } = makeService();
-		const allMembers = [makeItem(1, "A"), makeItem(2, "B"), makeItem(3, "C")];
-		let callCount = 0;
-
-		global.fetch = async () => {
-			callCount++;
-			// callCount 1 = probe (1 item), callCount 2 = full page
-			const members = callCount === 1 ? [allMembers[0]] : allMembers;
-			return new Response(
-				JSON.stringify({
-					"@context": "",
-					"@type": "Collection",
-					"@id": entityPath,
-					member: members,
-					totalItems: 3,
-				} satisfies Collection<Entity, EntityIri>),
-				{ status: 200 },
-			);
-		};
-
-		const result = await entityService.getAllPages();
-
-		assert.strictEqual(result.totalItems, 3);
-		assert.strictEqual(result.member.length, 3);
-	});
-
-	test("getAllPages: should stop at probe when onProgress returns false on page 0", async () => {
-		const { entityService } = makeService();
-
-		global.fetch = async () =>
-			new Response(
-				JSON.stringify({
-					"@context": "",
-					"@type": "Collection",
-					"@id": entityPath,
-					member: [makeItem(1, "A")],
-					totalItems: 10,
-				} satisfies Collection<Entity, EntityIri>),
-				{ status: 200 },
-			);
-
-		const result = await entityService.getAllPages(({ page }) =>
-			page === 0 ? false : undefined,
-		);
-
-		assert.strictEqual(result.member.length, 0);
-	});
-
-	test("getAllPages: should stop after first page when onProgress returns false", async () => {
-		const { entityService } = makeService();
-		let callCount = 0;
-
-		global.fetch = async () => {
-			callCount++;
-			const isProbe = callCount === 1;
-			return new Response(
-				JSON.stringify({
-					"@context": "",
-					"@type": "Collection",
-					"@id": entityPath,
-					member: isProbe
-						? [makeItem(1, "A")]
-						: [makeItem(1, "A"), makeItem(2, "B")],
-					totalItems: 10,
-				} satisfies Collection<Entity, EntityIri>),
-				{ status: 200 },
-			);
-		};
-
-		const result = await entityService.getAllPages(({ page }) =>
-			page >= 1 ? false : undefined,
-		);
-
-		assert.strictEqual(result.member.length, 2);
-	});
-
-	test("getAllPages: should call onProgress with correct values", async () => {
-		const { entityService } = makeService();
-		const progressCalls: number[] = [];
-		let callCount = 0;
-
-		global.fetch = async () => {
-			callCount++;
-			const isProbe = callCount === 1;
-			return new Response(
-				JSON.stringify({
-					"@context": "",
-					"@type": "Collection",
-					"@id": entityPath,
-					member: isProbe
-						? [makeItem(1, "A")]
-						: [makeItem(1, "A"), makeItem(2, "B")],
-					totalItems: 2,
-				} satisfies Collection<Entity, EntityIri>),
-				{ status: 200 },
-			);
-		};
-
-		await entityService.getAllPages(({ progressPercent }) => {
-			progressCalls.push(progressPercent);
-		});
-
-		assert.ok(progressCalls.length >= 1);
-		assert.strictEqual(progressCalls[progressCalls.length - 1], 100);
-	});
-
-	test("getAllPages: should fetch every page when the server ignores the page size", async () => {
-		const { entityService } = makeService();
-		const allMembers = [1, 2, 3, 4, 5].map((id) =>
-			makeItem(id, `Entity ${id}`),
-		);
-		let callCount = 0;
-
-		global.fetch = async (input) => {
-			callCount++;
-			const page = Number(new URL(input.toString()).searchParams.get("page"));
-			return new Response(
-				JSON.stringify({
-					"@context": "",
-					"@type": "Collection",
-					"@id": entityPath,
-					member: allMembers.slice((page - 1) * 2, page * 2),
-					totalItems: 5,
-					view: {
-						"@id": `${entityPath}?page=${page}`,
-						"@type": "PartialCollectionView",
-					},
-				} satisfies Collection<Entity, EntityIri>),
-				{ status: 200 },
-			);
-		};
-
-		const result = await entityService.getAllPages();
-
-		assert.deepStrictEqual(result.member, allMembers);
-		assert.strictEqual(result.totalItems, 5);
-		assert.strictEqual(result.view, undefined);
-		assert.strictEqual(callCount, 4);
-	});
-
 	test("upsert: should call create when body has a null id", async () => {
 		const { entityService } = makeService();
 		const response = makeItem(1, "New Entity");
@@ -648,6 +486,224 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
+	test("getAllPages: should return an empty collection", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			return new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "Collection",
+					"@id": entityPath,
+					member: [],
+					totalItems: 0,
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.deepStrictEqual(result.member, []);
+		assert.strictEqual(result.totalItems, 0);
+		assert.strictEqual(callCount, 1);
+	});
+
+	test("getAllPages: should ask for pages of 100 items unless a size is given", async () => {
+		const { entityService } = makeService();
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(
+				JSON.stringify({ member: [makeItem(1, "A")], totalItems: 1 }),
+				{ status: 200 },
+			);
+		};
+
+		await entityService.getAllPages();
+		await entityService.getAllPages({
+			pageSize: 50,
+			filters: [{ id: "name", value: "A" }],
+		});
+
+		assert.deepStrictEqual(urls, [
+			"https://example.com/entities?itemsPerPage=100",
+			"https://example.com/entities?itemsPerPage=50&name=A",
+		]);
+	});
+
+	test("getAllPages: should use the page size of a resource that refuses the parameter", async () => {
+		const { entityService } = makeService();
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return input.toString().includes("itemsPerPage")
+				? new Response(JSON.stringify({ detail: "Parameter not supported" }), {
+						status: 400,
+					})
+				: new Response(
+						JSON.stringify({ member: [makeItem(1, "A")], totalItems: 1 }),
+						{ status: 200 },
+					);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.strictEqual(result.member.length, 1);
+		assert.deepStrictEqual(urls, [
+			"https://example.com/entities?itemsPerPage=100",
+			"https://example.com/entities",
+		]);
+		await assert.rejects(() => entityService.getAllPages({ pageSize: 50 }), {
+			name: "ApiError",
+			status: 400,
+		});
+	});
+
+	test("getAllPages: should follow the next link of each page", async () => {
+		const { entityService } = makeService();
+		const allMembers = [1, 2, 3, 4, 5].map((id) =>
+			makeItem(id, `Entity ${id}`),
+		);
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			const page =
+				Number(new URL(input.toString()).searchParams.get("page")) || 1;
+			return new Response(
+				JSON.stringify({
+					"@context": "",
+					"@type": "Collection",
+					"@id": entityPath,
+					member: allMembers.slice((page - 1) * 2, page * 2),
+					totalItems: 5,
+					view: {
+						"@id": `${entityPath}?page=${page}`,
+						"@type": "PartialCollectionView",
+						...(page < 3 && { next: `${entityPath}?page=${page + 1}` }),
+					},
+				} satisfies Collection<Entity, EntityIri>),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.deepStrictEqual(result.member, allMembers);
+		assert.strictEqual(result.totalItems, 5);
+		assert.strictEqual(result.view, undefined);
+		assert.deepStrictEqual(urls, [
+			"https://example.com/entities?itemsPerPage=100",
+			"https://example.com/entities?page=2",
+			"https://example.com/entities?page=3",
+		]);
+	});
+
+	test("getAllPages: should ask for the next page number when there is no next link", async () => {
+		const { entityService } = makeService();
+		const allMembers = [1, 2, 3, 4, 5].map((id) =>
+			makeItem(id, `Entity ${id}`),
+		);
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			const page =
+				Number(new URL(input.toString()).searchParams.get("page")) || 1;
+			return new Response(
+				JSON.stringify({
+					member: allMembers.slice((page - 1) * 2, page * 2),
+					totalItems: 5,
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages({ pageSize: 2 });
+
+		assert.deepStrictEqual(result.member, allMembers);
+		assert.deepStrictEqual(urls, [
+			"https://example.com/entities?itemsPerPage=2",
+			"https://example.com/entities?page=2&itemsPerPage=2",
+			"https://example.com/entities?page=3&itemsPerPage=2",
+		]);
+	});
+
+	test("getAllPages: should read nothing when onProgress returns false on page 0", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			return new Response(
+				JSON.stringify({ member: [makeItem(1, "A")], totalItems: 10 }),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages(({ page }) =>
+			page === 0 ? false : undefined,
+		);
+
+		assert.strictEqual(result.member.length, 0);
+		assert.strictEqual(callCount, 1);
+	});
+
+	test("getAllPages: should stop after the first page when onProgress returns false", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			return new Response(
+				JSON.stringify({
+					member: [makeItem(1, "A"), makeItem(2, "B")],
+					totalItems: 10,
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages(({ page }) =>
+			page >= 1 ? false : undefined,
+		);
+
+		assert.strictEqual(result.member.length, 2);
+		assert.strictEqual(callCount, 1);
+	});
+
+	test("getAllPages: should report its progress after each page", async () => {
+		const { entityService } = makeService();
+		const progress: object[] = [];
+
+		global.fetch = async (input) => {
+			const page =
+				Number(new URL(input.toString()).searchParams.get("page")) || 1;
+			return new Response(
+				JSON.stringify({
+					member: [makeItem(page * 2 - 1, "A"), makeItem(page * 2, "B")],
+					totalItems: 4,
+				}),
+				{ status: 200 },
+			);
+		};
+
+		await entityService.getAllPages((step) => {
+			progress.push(step);
+		});
+
+		assert.deepStrictEqual(progress, [
+			{ page: 0, fetchedItems: 0, totalItems: 4, progressPercent: 0 },
+			{ page: 1, fetchedItems: 2, totalItems: 4, progressPercent: 50 },
+			{ page: 2, fetchedItems: 4, totalItems: 4, progressPercent: 100 },
+		]);
+	});
+
 	test("getAllPages: should read a page of any size", async () => {
 		const { entityService } = makeService();
 		const member = Array.from({ length: 200_000 }, (_, id) => ({ id }));
@@ -671,7 +727,8 @@ describe("entityServiceBuilder", () => {
 
 		global.fetch = async (input) => {
 			callCount++;
-			const page = Number(new URL(input.toString()).searchParams.get("page"));
+			const page =
+				Number(new URL(input.toString()).searchParams.get("page")) || 1;
 			return new Response(
 				JSON.stringify({
 					member: allMembers.slice((page - 1) * 2, page * 2),
@@ -684,14 +741,14 @@ describe("entityServiceBuilder", () => {
 		const result = await entityService.getAllPages();
 
 		assert.deepStrictEqual(result.member, allMembers);
-		assert.strictEqual(callCount, 4);
+		assert.strictEqual(result.totalItems, 5);
+		assert.strictEqual(callCount, 3);
 	});
 
 	test("getAllPages: should follow the cursor of each page", async () => {
 		const { entityService } = makeService();
 		const pages: Record<string, { ids: number[]; next?: string }> = {
-			"/entities?pagination=true&page=1&itemsPerPage=1": { ids: [9] },
-			"/entities?pagination=true&page=1&itemsPerPage=2": {
+			"/entities?itemsPerPage=2": {
 				ids: [9, 8],
 				next: "/entities?itemsPerPage=2&id%5Blt%5D=8",
 			},
@@ -739,7 +796,7 @@ describe("entityServiceBuilder", () => {
 		const result = await entityService.getAllPages();
 
 		assert.strictEqual(result.member.length, 1);
-		assert.strictEqual(callCount, 2);
+		assert.strictEqual(callCount, 1);
 	});
 
 	test("getAllPages: should stop when the next page was already followed", async () => {
@@ -760,7 +817,36 @@ describe("entityServiceBuilder", () => {
 		const result = await entityService.getAllPages();
 
 		assert.strictEqual(result.member.length, 2);
-		assert.strictEqual(callCount, 3);
+		assert.strictEqual(callCount, 2);
+	});
+
+	test("getAllPages: should not read a page twice when a next link loops back", async () => {
+		const { entityService } = makeService();
+		const pages = [
+			`${entityPath}?page=1`,
+			`${entityPath}?page=2`,
+			`${entityPath}?page=1`,
+		];
+		let callCount = 0;
+
+		global.fetch = async () => {
+			const index = callCount++;
+			return new Response(
+				JSON.stringify({
+					member: [makeItem(index + 1, "A")],
+					view: { "@id": pages[index], next: pages[index + 1] },
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.deepStrictEqual(
+			result.member.map((member) => member["@id"]),
+			["/entities/1", "/entities/2"],
+		);
+		assert.strictEqual(callCount, 2);
 	});
 
 	test("getAllPages: should read a collection with the hydra: prefix", async () => {
@@ -829,10 +915,16 @@ describe("entityServiceBuilder", () => {
 		await bookService.get("f47ac10b-58cc-4372-a567-0e02b2c3d479");
 		await bookService.get("/books/f47ac10b-58cc-4372-a567-0e02b2c3d479");
 		await bookService.update({ id: "the-hobbit", name: "The Hobbit" });
+		await bookService.update({
+			"@id": "/books/the-hobbit",
+			id: "the-hobbit",
+			name: "The Hobbit",
+		});
 
 		assert.deepStrictEqual(urls, [
 			"https://example.com/books/f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			"https://example.com/books/f47ac10b-58cc-4372-a567-0e02b2c3d479",
+			"https://example.com/books/the-hobbit",
 			"https://example.com/books/the-hobbit",
 		]);
 	});
@@ -871,6 +963,10 @@ describe("entityServiceBuilder", () => {
 		global.fetch = fetchMock;
 
 		await assert.rejects(() => bookService.get(""), TypeError);
+		await assert.rejects(
+			() => bookService.get(undefined as unknown as string),
+			TypeError,
+		);
 		await assert.rejects(() => bookService.delete("."), TypeError);
 		await assert.rejects(() => bookService.delete(".."), TypeError);
 		await assert.rejects(

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import entityServiceBuilder from "../lib/entity-service-builder.ts";
 import fetchBuilder from "../lib/fetch-builder.ts";
-import type { Collection } from "./collection.ts";
+import type { Collection, PartialCollection } from "./collection.ts";
 import type { AbsoluteIri, GetIri, Iri, IriId } from "./iri.ts";
 import type { Item } from "./item.ts";
 import type { PropertyPath } from "./property-path.ts";
@@ -13,6 +13,8 @@ type Equal<A, B> =
 	(<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
 		? true
 		: false;
+
+type Alike<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 
 type CompanyIri = Iri<"api/companies", string>;
 type Company = Item<{ name: string; city: string }, CompanyIri>;
@@ -132,7 +134,7 @@ describe("types", () => {
 		assert.equal(users["hydra:member"], undefined);
 	});
 
-	test("a relation selected as a whole should stay an item or an IRI", async () => {
+	test("a relation declared as an item or an IRI should be an IRI when selected as a whole", async () => {
 		respond({
 			member: [
 				{
@@ -148,7 +150,7 @@ describe("types", () => {
 			.get<Users>("/users")
 			.withOptions({ properties: ["company"] })
 			.fetch();
-		const company: Company | CompanyIri = users.member[0].company;
+		const company: CompanyIri = users.member[0].company;
 
 		assert.equal(company, "/api/companies/acme");
 	});
@@ -157,6 +159,8 @@ describe("types", () => {
 		type Task = {
 			manager: UserIri | null;
 			company: Company | CompanyIri | null;
+			owner: Company;
+			partners: (Company | CompanyIri)[];
 			route: "/" | "/users" | "/users/list";
 		};
 		type Tasks = Collection<Task, Iri<"api/tasks">>;
@@ -168,12 +172,83 @@ describe("types", () => {
 		const checks: [
 			Equal<Selected<"manager">["manager"], UserIri | null>,
 			Equal<Selected<"company">["company"], CompanyIri | null>,
+			Alike<Selected<"owner">["owner"], Company>,
+			Equal<Selected<"partners">["partners"], CompanyIri[]>,
 			Equal<Selected<"route">["route"], "/" | "/users" | "/users/list">,
 			null extends Selected<"company.name">["company"] ? true : false,
 			Equal<NonNullable<Selected<"company.name">["company"]>["name"], string>,
-		] = [true, true, true, true, true];
+			"@context" extends keyof NonNullable<Selected<"company.name">["company"]>
+				? false
+				: true,
+		] = [true, true, true, true, true, true, true, true];
 
 		assert.ok(checks.every(Boolean));
+	});
+
+	test("a response without selected properties should keep its declared type", async () => {
+		respond({ member: [], totalItems: 0 });
+
+		const users = await api
+			.get<Users>("/users")
+			.withOptions({ sortBy: [{ id: "name", desc: false }] })
+			.fetch();
+		const check: Equal<
+			(typeof users.member)[number]["company"],
+			Company | CompanyIri
+		> = true;
+
+		assert.deepEqual(users.member, []);
+		assert.ok(check);
+	});
+
+	test("a partial collection should have no total", () => {
+		type Logs = PartialCollection<User, UserIri>;
+		const paths: PropertyPath<Logs>[] = ["name", "company.name"];
+		const checks: [
+			"totalItems" extends keyof Logs ? false : true,
+			"totalItems" extends keyof PropertyValue<Logs, "name"> ? false : true,
+			Equal<PropertyValue<Logs, "name">["member"][number]["name"], string>,
+			Equal<PropertyValue<Users, "name">["totalItems"], number>,
+		] = [true, true, true, true];
+
+		assert.equal(paths.length, 2);
+		assert.ok(checks.every(Boolean));
+	});
+
+	test("a service on a partially paginated resource should have no total", async () => {
+		respond({ member: [], view: { next: "/api/users?page=2" } });
+		const logs = entityServiceBuilder<
+			UserIri,
+			{ name: string },
+			User,
+			"partial"
+		>(api, "/users");
+
+		const page = await logs.getAll();
+		const selected = await logs.getAll({ properties: ["name"] });
+		const all = await logs.getAllPages();
+		const total: number = all.totalItems;
+
+		// @ts-expect-error a partial collection has no total
+		assert.equal(page.totalItems, undefined);
+		// @ts-expect-error a partial collection has no total
+		assert.equal(selected.totalItems, undefined);
+		assert.equal(total, 0);
+	});
+
+	test("a date filter should take its dates in a record", async () => {
+		respond({ member: [], totalItems: 0 });
+		const date = new Date("2020-01-01T00:00:00Z");
+
+		await api
+			.get<Users>("/users")
+			.withOptions({ filters: [{ id: "createdAt", value: { after: date } }] })
+			.fetch();
+		await api
+			.get<Users>("/users")
+			// @ts-expect-error a date on its own is not a filter value
+			.withOptions({ filters: [{ id: "createdAt", value: date }] })
+			.fetch();
 	});
 
 	test("absolute IRIs should behave like path IRIs", async () => {

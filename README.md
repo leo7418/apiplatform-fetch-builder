@@ -34,8 +34,11 @@ const api = fetchBuilder("https://api.example.com", {
       "Accept-Language": navigator.language,
     };
   },
-  refreshAuth: async () => {
-    localStorage.setItem("token", await fetchNewToken());
+  refreshAuth: async (auth) => {
+    const { token } = await auth
+      .post<{ token: string }, { refresh_token: string | null }>("/token/refresh")
+      .fetch({ refresh_token: localStorage.getItem("refreshToken") });
+    localStorage.setItem("token", token);
   },
   onUnauthorized: () => router.push("/login"),
 });
@@ -111,7 +114,7 @@ try {
 }
 ```
 
-`isHydraError` narrows the body to the error format of API Platform, without a cast:
+`isHydraError` narrows the body to the error format of API Platform, without a cast. An error that Symfony renders itself (unknown route, 405, a 401 or 403 from the firewall) only has this format when `handle_symfony_errors` is enabled, and a 401 can have an empty body:
 
 ```ts
 import { ApiError, isHydraError } from "apiplatform-fetch-builder";
@@ -127,7 +130,7 @@ A `POST`, `PATCH`, `PUT` or `DELETE` response without a body (204) resolves with
 
 ## File downloads
 
-`fetchRaw()` sends the request like `fetch()`, with the same headers, authentication refresh and errors, but resolves with the native `Response` instead of parsing JSON. Use it for a file or any response that is not JSON, and set `Accept` to the format you expect:
+`fetchRaw()` sends the request like `fetch()`, with the same headers, authentication refresh and errors, but resolves with the native `Response` instead of parsing JSON. Use it for a file or any response that is not JSON, and set `Accept` to the format the endpoint declares, or to `*/*`:
 
 ```ts
 const response = await api
@@ -158,7 +161,7 @@ declare module "apiplatform-fetch-builder" {
 }
 ```
 
-`Collection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:title`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
+`Collection`, `PartialCollection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:title`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
 
 ## `entityServiceBuilder`
 
@@ -262,8 +265,8 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 | `entrypoint` | `string` | Base URL of the API. Its path is prepended to every path that does not already start with it, so `/users` and the IRI `/api/users/1` both work with `https://api.example.com/api` |
 | `config.originAliases` | `string[]` | Other origins the API uses in its IRIs. A request to one of them is sent to the entrypoint instead |
 | `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request. `withHeaders` and `fetch({ headers })` override them |
-| `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call, including across clones. If it rejects, the request is not retried. Call the authentication endpoints with a separate fetcher, which has neither the authentication headers nor these hooks: `fetchBuilder(entrypoint)` |
-| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on a 401 that remains after the retry, when `refreshAuth` rejects, or immediately if there is no `refreshAuth` |
+| `config.refreshAuth` | `(fetcher) => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. It receives a fetcher for the same API that has neither the `headers` nor these hooks: call the refresh endpoint with it, never with the main fetcher, whose request would wait for the refresh it is part of. Concurrent 401 responses of a fetcher and its clones share a single call, so one fetcher stands for one identity: on a server, build one per request. If it rejects, the request is not retried and the reason is the `cause` of the `ApiError` |
+| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on a 401 that remains after the retry, when the API refuses the refresh (`refreshAuth` rejects with a 4xx `ApiError`), or immediately if there is no `refreshAuth`. A refresh that fails for another reason, such as a network error, does not call it |
 | `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`…) applies to every request; `fetch(options)` overrides it. |
 
 Returns a `Fetcher`: `{ get, post, patch, put, delete, clone }`.
@@ -321,14 +324,26 @@ controller.abort();
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `pagination` | `boolean` | Enables or disables pagination |
+| `pagination` | `boolean` | Enables or disables pagination. Ignored unless the API allows it (`pagination_client_enabled`) |
 | `pageIndex` | `number` | 0-based page index |
-| `pageSize` | `number` | Items per page |
+| `pageSize` | `number` | Items per page. Ignored unless the API allows it (`pagination_client_items_per_page`) |
 | `sortBy` | `{ id: PropertyPath, desc: boolean }[]` | Sort fields (type-safe) |
-| `filters` | `{ id: PropertyPath \| string, value: ... }[]` | Filters: property paths are suggested, any other filter name (`exists`, a custom one) is accepted |
+| `filters` | `{ id: PropertyPath \| string, value: ... }[]` | Filters: property paths are suggested, any other filter name (`exists`, a custom one) is accepted. A date goes in a record, as the date filter of API Platform expects: `{ after: date }`, `{ before: date }`; it is sent as an ISO string |
 | `properties` | `PropertyPath[]` | Partial response selection |
 
 Only the options that are set are sent; the API defaults apply to the others.
+
+Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, pass `"partial"` as the fourth type argument: `entityServiceBuilder<LogIri, LogBody, Log, "partial">(api, "/logs")`.
+
+`properties` narrows the type of the response, and the way a relation is declared tells how the API serializes it:
+
+| Declaration | Meaning | Type once selected |
+|-------------|---------|--------------------|
+| `company: CompanyIri` | Always an IRI | `CompanyIri` |
+| `company: Company` | Always embedded, by the serialization groups of the API | `Company` with `company`, the selected properties with `company.name` |
+| `company: Company \| CompanyIri` | An IRI, embedded only when one of its properties is selected | `CompanyIri` with `company`, the embedded item with `company.name` |
+
+A route that serializes a resource in another way is typed with its own model. Without `properties`, the response keeps the type it was given. API Platform leaves out a property whose value is `null`: declare such a property as optional (`company?: Company | CompanyIri`).
 
 ---
 
@@ -339,10 +354,10 @@ Only the options that are set are sent; the API defaults apply to the others.
 | `create(body)` | POST — creates a new resource. The body is sent without the JSON-LD keys; an `id` is kept, for identifiers generated by the client |
 | `get(idOrIri, options?)` | GET — fetches a single resource |
 | `getAll(options?)` | GET — fetches the collection (one page) |
-| `getAllPages(onProgress?)` | GET — fetches all pages, concatenates members. Follows the `next` link of each page, so page, partial and cursor pagination all work. `onProgress` can return `false` to stop early |
+| `getAllPages(onProgress?)` | GET — fetches all pages, concatenates members. Follows the `next` link of each page, so page, partial and cursor pagination all work. `onProgress` can return `false` to stop early, before any item is read when it does so on page 0. Pages of 100 items are requested unless `pageSize` is given; a resource that refuses the parameter is read with its own page size |
 | `getAllPages(getOptions, onProgress?)` | Same with filters/sorting/pageSize |
-| `update(idOrIri, body)` or `update(bodyWithId)` | PATCH — the body is sent without `id` and the JSON-LD keys (`@id`, `@type`, `@context`) |
-| `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT — same rule for the body |
+| `update(idOrIri, body)` or `update(bodyWithId)` | PATCH — the body is sent without `id` and the JSON-LD keys (`@id`, `@type`, `@context`). A relation is sent as it is given: API Platform expects its IRI, unless the resource accepts nested writes |
+| `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT — same rule for the body. API Platform 4 and later do not expose `PUT` by default: the resource has to declare the operation |
 | `upsert(body)` | POST if there is no id (absent, `null` or empty), PATCH if `@id` or `id` is present |
 | `delete(idOrIri)` | DELETE |
 

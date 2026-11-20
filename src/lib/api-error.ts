@@ -9,9 +9,9 @@ export class ApiError extends Error {
 	constructor(
 		status: number,
 		body: unknown,
-		message = `Request failed with status ${status}`,
+		options: { message?: string; cause?: unknown } = {},
 	) {
-		super(message);
+		super(options.message ?? `Request failed with status ${status}`, options);
 		this.name = "ApiError";
 		this.status = status;
 		this.body = body;
