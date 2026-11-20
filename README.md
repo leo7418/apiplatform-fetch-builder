@@ -123,7 +123,28 @@ if (error instanceof ApiError && isHydraError(error.body)) {
 }
 ```
 
-A response without a body (204, `DELETE`) resolves with `null`. A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API.
+A response without a body (204, `DELETE`) resolves with `null`. A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API. When the API writes its IRIs with another origin than the one you call (behind a proxy, for instance), list it in `originAliases`: these URLs are then sent to the entrypoint.
+
+## File downloads
+
+`fetchRaw()` sends the request like `fetch()`, with the same headers, authentication refresh and errors, but resolves with the native `Response` instead of parsing JSON. Use it for a file or any response that is not JSON, and set `Accept` to the format you expect:
+
+```ts
+const response = await api
+  .get("/users")
+  .withOptions({ filters: [{ id: "status", value: "active" }] })
+  .withHeaders({ Accept: "text/csv" })
+  .fetchRaw();
+
+const file = await response.blob();
+const disposition = response.headers.get("Content-Disposition");
+```
+
+A file served outside the path of the entrypoint, such as `/media/1.png` next to an API under `/api`, is requested with its full URL: the entrypoint path is not prepended to it.
+
+## Scope
+
+The library types and sends JSON-LD requests. It does not retry, time out, cache or deduplicate them: leave that to the caller, for instance TanStack Query, and pass its `signal` to `fetch({ signal })`. A response that is not JSON, such as a file download, is read with `fetchRaw()`.
 
 ## `hydra:` prefix
 
@@ -165,6 +186,9 @@ const user2 = await userService.get("/users/1");
 
 // String identifiers (UUID, ULID, slug): type the IRI with Iri<"users", string>
 // const user3 = await userService.get("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+
+// IRIs returned as full URLs, with or without the protocol (url_generation_strategy: ABS_URL or NET_PATH): type them with AbsoluteIri<"users">
+// const user4 = await userService.get("https://api.example.com/users/1");
 
 // Get with property selection
 const partial = await userService.get(1, { properties: ["name"] });
@@ -236,16 +260,17 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entrypoint` | `string` | Base URL of the API. Its path is prepended to every path that does not already start with it, so `/users` and the IRI `/api/users/1` both work with `https://api.example.com/api` |
+| `config.originAliases` | `string[]` | Other origins the API uses in its IRIs. A request to one of them is sent to the entrypoint instead |
 | `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request. `withHeaders` and `fetch({ headers })` override them |
-| `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call. Do not call the refresh endpoint through the same fetcher |
+| `config.refreshAuth` | `() => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. Concurrent 401 responses share a single call. Call the authentication endpoints with a fetcher that has no hooks: `api.clone({ refreshAuth: undefined, onUnauthorized: undefined })` |
 | `config.onUnauthorized` | `() => void \| Promise<void>` | Called on 401 after the retry (or immediately if no `refreshAuth`) |
-| `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`…) applies to every request; `fetch(options)` overrides it |
+| `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`…) applies to every request; `fetch(options)` overrides it. |
 
 Returns `{ get, post, patch, put, delete, clone }`.
 
 ### `clone(overrides?)`
 
-Returns a new fetcher with the same `entrypoint` and config merged with `overrides`. An overridden key replaces the original one, `headers` included.
+Returns a new fetcher with the same `entrypoint` and config merged with `overrides`. An overridden key replaces the original one, except `headers`: the ones of the clone are added to the ones of the original and win on the same name.
 
 ```ts
 const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
@@ -258,6 +283,7 @@ const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 | Method | Description |
 |--------|-------------|
 | `.fetch(options?)` | Performs the GET request |
+| `.fetchRaw(options?)` | Same request, resolves with the native `Response` (file downloads) |
 | `.withOptions(getOptions)` | Adds pagination, sorting, filtering, property selection |
 | `.withHeaders(headers)` | Merges custom headers (chainable, also available after `.withOptions()`) |
 
@@ -266,8 +292,11 @@ const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 | Method | Description |
 |--------|-------------|
 | `.fetch(body, options?)` | Performs the request with body |
+| `.fetchRaw(body, options?)` | Same request, resolves with the native `Response` |
 | `.withBody(body)` | Pre-configures the body — returns a builder where `.fetch()` takes no body argument |
 | `.withHeaders(headers)` | Merges custom headers (chainable after `.withBody()`) |
+
+The body is sent as JSON. A `FormData`, `Blob`, `URLSearchParams` or binary buffer is sent as it is.
 
 ### `AbortSignal`
 
@@ -296,7 +325,7 @@ controller.abort();
 | `pageIndex` | `number` | 0-based page index |
 | `pageSize` | `number` | Items per page |
 | `sortBy` | `{ id: PropertyPath, desc: boolean }[]` | Sort fields (type-safe) |
-| `filters` | `{ id: PropertyPath, value: ... }[]` | Filter fields (type-safe) |
+| `filters` | `{ id: PropertyPath \| string, value: ... }[]` | Filters: property paths are suggested, any other filter name (`exists`, a custom one) is accepted |
 | `properties` | `PropertyPath[]` | Partial response selection |
 
 Only the options that are set are sent; the API defaults apply to the others.
@@ -307,13 +336,13 @@ Only the options that are set are sent; the API defaults apply to the others.
 
 | Method | Description |
 |--------|-------------|
-| `create(body)` | POST — creates a new resource |
+| `create(body)` | POST — creates a new resource. The body is sent without the JSON-LD keys; an `id` is kept, for identifiers generated by the client |
 | `get(idOrIri, options?)` | GET — fetches a single resource |
 | `getAll(options?)` | GET — fetches the collection (one page) |
-| `getAllPages(onProgress?)` | GET — fetches all pages, concatenates members. `onProgress` can return `false` to stop early |
+| `getAllPages(onProgress?)` | GET — fetches all pages, concatenates members. Follows the `next` link of each page, so page, partial and cursor pagination all work. `onProgress` can return `false` to stop early |
 | `getAllPages(getOptions, onProgress?)` | Same with filters/sorting/pageSize |
-| `update(idOrIri, body)` or `update(bodyWithId)` | PATCH |
-| `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT |
+| `update(idOrIri, body)` or `update(bodyWithId)` | PATCH — the body is sent without `id` and the JSON-LD keys (`@id`, `@type`, `@context`) |
+| `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT — same rule for the body |
 | `upsert(body)` | POST if no id, PATCH if `@id` or `id` present |
 | `delete(idOrIri)` | DELETE |
 

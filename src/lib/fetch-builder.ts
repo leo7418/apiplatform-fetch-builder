@@ -36,7 +36,8 @@ export type GetOptions<
 		desc: boolean;
 	}[];
 	filters?: {
-		id: [PropertyPath<Out>] extends [never] ? string : PropertyPath<Out>;
+		/** A property path, or the name of any other filter (`exists`, a custom one). */
+		id: PropertyPath<Out> | (string & {});
 		value:
 			| Date
 			| string
@@ -60,6 +61,8 @@ export type GetOptions<
 );
 
 export type BuilderConfig = Omit<RequestInit, "method" | "body" | "headers"> & {
+	/** Other origins the API uses in its IRIs; a request to one of them is sent to the entrypoint. */
+	originAliases?: string[];
 	/** Headers sent with every request; a function is called before each request. */
 	headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
 	/** Called on a 401 response; the request is then retried once with fresh headers. */
@@ -69,7 +72,7 @@ export type BuilderConfig = Omit<RequestInit, "method" | "body" | "headers"> & {
 };
 
 const assertSafeKey = (key: string, context: string) => {
-	if (!/^[\w.]+$/.test(key)) {
+	if (!/^[\w.-]+$/.test(key)) {
 		throw new TypeError(`Unsafe ${context} key: "${key}"`);
 	}
 };
@@ -81,6 +84,16 @@ const mergeHeaders = (...sources: (HeadersInit | undefined)[]): Headers => {
 	);
 	return merged;
 };
+
+const resolveHeaders = async (headers: BuilderConfig["headers"]) =>
+	typeof headers === "function" ? headers() : headers;
+
+const isRawBody = (body: unknown): body is BodyInit =>
+	body instanceof FormData ||
+	body instanceof Blob ||
+	body instanceof URLSearchParams ||
+	body instanceof ArrayBuffer ||
+	ArrayBuffer.isView(body);
 
 const parseErrorBody = (text: string): unknown => {
 	try {
@@ -155,28 +168,34 @@ const buildGetOptions = ({
 
 const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 	const {
+		originAliases = [],
 		headers: commonHeaders,
 		refreshAuth,
 		onUnauthorized,
 		...init
 	} = config;
+	const aliasOrigins = originAliases.map((alias) => new URL(alias).origin);
 	let refreshing: Promise<void> | undefined;
 
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
 		const base = new URL(entrypoint);
 		const basePath = base.pathname.replace(/\/+$/, "");
-		const url = new URL(path, `${base.origin}/`);
-		if (url.origin !== base.origin) {
+		const target = new URL(path, `${base.origin}/`);
+		const isAlias = aliasOrigins.includes(target.origin);
+		if (target.origin !== base.origin && !isAlias) {
 			throw new TypeError(`Cross-origin URL: "${path}"`);
 		}
+		const url = isAlias
+			? new URL(base.origin + target.pathname + target.search)
+			: target;
 		if (
-			!/^([a-z][a-z\d+.-]*:)?\/\//i.test(path) &&
+			(isAlias || !/^([a-z][a-z\d+.-]*:)?\/\//i.test(path)) &&
 			url.pathname !== basePath &&
 			!url.pathname.startsWith(`${basePath}/`)
 		) {
 			url.pathname = basePath + url.pathname;
 		}
-		if (searchParams) url.search = searchParams.toString();
+		searchParams?.forEach((value, key) => url.searchParams.append(key, value));
 		return url.toString();
 	};
 
@@ -192,7 +211,7 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 			method,
 			headers: mergeHeaders(
 				{
-					...(body == null || body instanceof FormData
+					...(body == null || isRawBody(body)
 						? {}
 						: {
 								"Content-Type":
@@ -202,26 +221,24 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 							}),
 					Accept: "application/ld+json",
 				},
-				typeof commonHeaders === "function"
-					? await commonHeaders()
-					: commonHeaders,
+				await resolveHeaders(commonHeaders),
 				headers,
 			),
 			body:
 				body == null
 					? undefined
-					: body instanceof FormData
+					: isRawBody(body)
 						? body
 						: JSON.stringify(body),
 			...restOptions,
 		});
 	};
 
-	const request = async <Out extends object | null, In = never>(
+	const send = async <In = never>(
 		url: string,
 		method: FetchMethod,
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
-	): Promise<Out> => {
+	): Promise<globalThis.Response> => {
 		let response = await doFetch<In>(url, method, options);
 
 		if (response.status === 401 && refreshAuth) {
@@ -243,6 +260,15 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 			);
 		}
 
+		return response;
+	};
+
+	const request = async <Out extends object | null, In = never>(
+		url: string,
+		method: FetchMethod,
+		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
+	): Promise<Out> => {
+		const response = await send<In>(url, method, options);
 		const text = method === "DELETE" ? "" : await response.text();
 
 		return (text === "" ? null : JSON.parse(text)) as Out;
@@ -254,12 +280,23 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 				...options,
 				headers: mergeHeaders(headers, options?.headers),
 			}),
+		fetchRaw: (options?: FetchOptions) =>
+			send(url, "GET", {
+				...options,
+				headers: mergeHeaders(headers, options?.headers),
+			}),
 		withHeaders: (h: HeadersInit) => get<Out>(url, mergeHeaders(headers, h)),
 		withOptions: <P extends PropertyPath<Out>[]>(
 			getOptions: GetOptions<Out, P>,
 		) => ({
-			fetch: (options?: FetchOptions) =>
+			fetch: async (options?: FetchOptions) =>
 				request<PropertyValue<Out, P[number]>>(url, "GET", {
+					...options,
+					headers: mergeHeaders(headers, options?.headers),
+					searchParams: buildGetOptions(getOptions as AnyGetOptions),
+				}),
+			fetchRaw: async (options?: FetchOptions) =>
+				send(url, "GET", {
 					...options,
 					headers: mergeHeaders(headers, options?.headers),
 					searchParams: buildGetOptions(getOptions as AnyGetOptions),
@@ -280,11 +317,23 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 				headers: mergeHeaders(headers, options?.headers),
 				body,
 			}),
+		fetchRaw: (body: In, options?: FetchOptions<In>) =>
+			send<In>(url, method, {
+				...options,
+				headers: mergeHeaders(headers, options?.headers),
+				body,
+			}),
 		withHeaders: (h: HeadersInit) =>
 			makeMutationBuilder<Out, In>(method, url, mergeHeaders(headers, h)),
 		withBody: (b: In) => ({
 			fetch: (options?: FetchOptions<In>) =>
 				request<Out, In>(url, method, {
+					...options,
+					headers: mergeHeaders(headers, options?.headers),
+					body: b,
+				}),
+			fetchRaw: (options?: FetchOptions<In>) =>
+				send<In>(url, method, {
 					...options,
 					headers: mergeHeaders(headers, options?.headers),
 					body: b,
@@ -323,7 +372,15 @@ const fetchBuilder = (entrypoint: string, config: BuilderConfig = {}) => {
 	});
 
 	const clone = (overrides: Partial<BuilderConfig> = {}) =>
-		fetchBuilder(entrypoint, { ...config, ...overrides });
+		fetchBuilder(entrypoint, {
+			...config,
+			...overrides,
+			headers: async () =>
+				mergeHeaders(
+					await resolveHeaders(commonHeaders),
+					await resolveHeaders(overrides.headers),
+				),
+		});
 
 	return { get, post, patch, put, delete: del, clone };
 };

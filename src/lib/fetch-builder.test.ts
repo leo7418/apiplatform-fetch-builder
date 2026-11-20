@@ -423,6 +423,20 @@ describe("fetch-builder clone", () => {
 		await cloned.get<object>("/test").fetch();
 	});
 
+	test("clone: should add its headers to the ones of the original", async () => {
+		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const headers = new Headers(init?.headers);
+			assert.equal(headers.get("Authorization"), "Bearer some-complex-token");
+			assert.equal(headers.get("X-Tenant"), "acme");
+
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		};
+		global.fetch = spy;
+
+		const cloned = fetcher.clone({ headers: () => ({ "X-Tenant": "acme" }) });
+		await cloned.get<object>("/test").fetch();
+	});
+
 	test("clone: should inherit original config when no overrides", async () => {
 		const spy = async (_input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(
@@ -527,8 +541,8 @@ describe("fetch-builder refreshAuth", () => {
 });
 
 describe("fetch-builder security", () => {
-	test("assertSafeKey: should throw on unsafe sortBy id", () => {
-		assert.throws(
+	test("assertSafeKey: should reject an unsafe sortBy id", async () => {
+		await assert.rejects(
 			() =>
 				fetcher
 					.get<{ items: object[] }>("/items")
@@ -538,8 +552,8 @@ describe("fetch-builder security", () => {
 		);
 	});
 
-	test("assertSafeKey: should throw on unsafe filter id", () => {
-		assert.throws(
+	test("assertSafeKey: should reject an unsafe filter id", async () => {
+		await assert.rejects(
 			() =>
 				fetcher
 					.get<{ items: object[] }>("/items")
@@ -559,7 +573,10 @@ describe("fetch-builder security", () => {
 		await assert.doesNotReject(() =>
 			fetcher
 				.get<{ items: object[] }>("/items")
-				.withOptions({ sortBy: [{ id: "employee.name", desc: false }] })
+				.withOptions({
+					sortBy: [{ id: "employee.name", desc: false }],
+					filters: [{ id: "created-after", value: "2026-01-01" }],
+				})
 				.fetch(),
 		);
 	});
@@ -650,6 +667,77 @@ describe("fetch-builder config request options", () => {
 	});
 });
 
+describe("fetch-builder request body", () => {
+	test("should send a binary body as it is, without a JSON Content-Type", async () => {
+		const blob = new Blob(["abc"], { type: "text/plain" });
+		global.fetch = async (_input, init) => {
+			assert.equal(init?.body, blob);
+			assert.equal(new Headers(init?.headers).get("Content-Type"), null);
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		await fetcher.post<object, Blob>("/media").fetch(blob);
+	});
+});
+
+describe("fetch-builder query string", () => {
+	test("should keep the query string of the path next to the options", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ items: [] }), { status: 200 });
+		};
+
+		const builder = fetcher.get<{ items: object[] }>("/items?page=2");
+		await builder
+			.withOptions({ sortBy: [{ id: "name", desc: false }] })
+			.fetch();
+		await builder.withOptions({}).fetch();
+
+		assert.deepEqual(urls, [
+			"https://example.com/items?page=2&order%5Bname%5D=ASC",
+			"https://example.com/items?page=2",
+		]);
+	});
+});
+
+describe("fetch-builder fetchRaw", () => {
+	test("should resolve with the response of a file download", async () => {
+		global.fetch = async (input, init) => {
+			const headers = new Headers(init?.headers);
+			assert.equal(input, "https://example.com/users?status=active");
+			assert.equal(headers.get("Authorization"), "Bearer some-complex-token");
+			assert.equal(headers.get("Accept"), "text/csv");
+			return new Response("id;name\n1;Alice", {
+				status: 200,
+				headers: { "Content-Disposition": 'attachment; filename="users.csv"' },
+			});
+		};
+
+		const response = await fetcher
+			.get<object>("/users")
+			.withOptions({ filters: [{ id: "status", value: "active" }] })
+			.withHeaders({ Accept: "text/csv" })
+			.fetchRaw();
+
+		assert.equal(
+			response.headers.get("Content-Disposition"),
+			'attachment; filename="users.csv"',
+		);
+		assert.equal(await response.text(), "id;name\n1;Alice");
+	});
+
+	test("should throw an ApiError on an error response", async () => {
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Not found" }), { status: 404 });
+
+		await assert.rejects(
+			() => fetcher.post<null, object>("/reports").withBody({}).fetchRaw(),
+			{ name: "ApiError", status: 404, body: { detail: "Not found" } },
+		);
+	});
+});
+
 describe("fetch-builder entrypoint path", () => {
 	const urls: string[] = [];
 	const prefixed = fetchBuilder("https://example.com/api/");
@@ -672,6 +760,34 @@ describe("fetch-builder entrypoint path", () => {
 			"https://example.com/api/users/1",
 			"https://example.com/api/api-keys?page=2",
 			"https://example.com/media/1",
+		]);
+	});
+});
+
+describe("fetch-builder originAliases", () => {
+	test("should send a URL of an alias origin to the entrypoint", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		const proxied = fetchBuilder("https://example.com/api", {
+			originAliases: ["http://internal.test:8080/"],
+		});
+
+		await proxied
+			.get<object>("http://internal.test:8080/users/1?page=2")
+			.fetch();
+		await proxied.get<object>("http://internal.test:8080/api/users/1").fetch();
+		await assert.rejects(
+			() => proxied.get<object>("http://internal.test/users/1").fetch(),
+			TypeError,
+		);
+
+		assert.deepEqual(urls, [
+			"https://example.com/api/users/1?page=2",
+			"https://example.com/api/users/1",
 		]);
 	});
 });

@@ -50,6 +50,42 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
+	test("should create an entity with its own id but without JSON-LD keys", async () => {
+		const { entityService } = makeService();
+		const item = makeItem(1, "Test Entity");
+
+		global.fetch = async (_input, init) => {
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				id: "f47ac10b",
+				name: "Copy",
+			});
+			return new Response(JSON.stringify(item), { status: 201 });
+		};
+
+		const body = { ...item, id: "f47ac10b", name: "Copy" };
+		await entityService.create(body);
+	});
+
+	test("should send a FormData body as it is", async () => {
+		const mediaService = entityServiceBuilder<Iri<"media">, FormData, Entity>(
+			"https://example.com",
+			"/media",
+		);
+		const form = new FormData();
+		form.append("file", new Blob(["abc"]), "a.txt");
+		const sent: unknown[] = [];
+
+		global.fetch = async (_input, init) => {
+			sent.push(init?.body);
+			return new Response(JSON.stringify({}), { status: 201 });
+		};
+
+		await mediaService.create(form);
+		await mediaService.upsert(form);
+
+		assert.deepStrictEqual(sent, [form, form]);
+	});
+
 	test("should get an entity by Iri", async () => {
 		const { fetcher, entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
@@ -223,6 +259,23 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
+	test("should update an entity without its identity keys", async () => {
+		const { entityService } = makeService();
+		const item = makeItem(1, "Entity");
+
+		global.fetch = async (_input, init) => {
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "Updated Entity",
+			});
+			return new Response(JSON.stringify(item), { status: 200 });
+		};
+
+		await entityService.update(item["@id"], {
+			...item,
+			name: "Updated Entity",
+		});
+	});
+
 	test("should update an entity by id", async () => {
 		const { entityService } = makeService();
 		const id = 1;
@@ -253,6 +306,9 @@ describe("entityServiceBuilder", () => {
 		global.fetch = async (input, init) => {
 			assert.equal(input, `https://example.com${entityPath}/${id}`);
 			assert.equal(init?.method, "PATCH");
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "Updated Entity",
+			});
 			return new Response(JSON.stringify(response), { status: 200 });
 		};
 
@@ -309,6 +365,9 @@ describe("entityServiceBuilder", () => {
 		global.fetch = async (input, init) => {
 			assert.equal(input, `https://example.com${entityPath}/${id}`);
 			assert.equal(init?.method, "PUT");
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "Updated Entity",
+			});
 			return new Response(JSON.stringify(response), { status: 200 });
 		};
 
@@ -356,6 +415,9 @@ describe("entityServiceBuilder", () => {
 		global.fetch = async (input, init) => {
 			assert.equal(input, `https://example.com${entityPath}/1`);
 			assert.equal(init?.method, "PATCH");
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "Updated Entity",
+			});
 			return new Response(JSON.stringify(response), { status: 200 });
 		};
 
@@ -542,6 +604,107 @@ describe("entityServiceBuilder", () => {
 		assert.strictEqual(result.totalItems, 5);
 		assert.strictEqual(result.view, undefined);
 		assert.strictEqual(callCount, 4);
+	});
+
+	test("upsert: should call create when body has a null id", async () => {
+		const { entityService } = makeService();
+		const response = makeItem(1, "New Entity");
+
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}`);
+			assert.equal(init?.method, "POST");
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "New Entity",
+			});
+			return new Response(JSON.stringify(response), { status: 201 });
+		};
+
+		const result = await entityService.upsert({
+			id: null,
+			name: "New Entity",
+		} as unknown as EntityBody);
+
+		assert.deepStrictEqual(result, response);
+	});
+
+	test("getAllPages: should follow the next page when the collection has no total", async () => {
+		const { entityService } = makeService();
+		const allMembers = [1, 2, 3, 4, 5].map((id) =>
+			makeItem(id, `Entity ${id}`),
+		);
+		let callCount = 0;
+
+		global.fetch = async (input) => {
+			callCount++;
+			const page = Number(new URL(input.toString()).searchParams.get("page"));
+			return new Response(
+				JSON.stringify({
+					member: allMembers.slice((page - 1) * 2, page * 2),
+					view: page < 3 ? { next: `${entityPath}?page=${page + 1}` } : {},
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.deepStrictEqual(result.member, allMembers);
+		assert.strictEqual(callCount, 4);
+	});
+
+	test("getAllPages: should follow the cursor of each page", async () => {
+		const { entityService } = makeService();
+		const pages: Record<string, { ids: number[]; next?: string }> = {
+			"/entities?pagination=true&page=1&itemsPerPage=1": { ids: [9] },
+			"/entities?pagination=true&page=1&itemsPerPage=2": {
+				ids: [9, 8],
+				next: "/entities?itemsPerPage=2&id%5Blt%5D=8",
+			},
+			"/entities?itemsPerPage=2&id%5Blt%5D=8": {
+				ids: [7, 6],
+				next: "/entities?itemsPerPage=2&id%5Blt%5D=6",
+			},
+			"/entities?itemsPerPage=2&id%5Blt%5D=6": { ids: [5] },
+		};
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			const url = input.toString().replace("https://example.com", "");
+			urls.push(url);
+			const { ids, next } = pages[url];
+			return new Response(
+				JSON.stringify({
+					member: ids.map((id) => makeItem(id, `Entity ${id}`)),
+					view: next ? { next } : {},
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const result = await entityService.getAllPages({ pageSize: 2 });
+
+		assert.deepStrictEqual(
+			result.member.map((member) => member["@id"]),
+			[9, 8, 7, 6, 5].map((id) => `/entities/${id}`),
+		);
+		assert.deepStrictEqual(urls, Object.keys(pages));
+	});
+
+	test("getAllPages: should stop when a collection without total has no next page", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			return new Response(JSON.stringify({ member: [makeItem(1, "A")] }), {
+				status: 200,
+			});
+		};
+
+		const result = await entityService.getAllPages();
+
+		assert.strictEqual(result.member.length, 1);
+		assert.strictEqual(callCount, 2);
 	});
 
 	test("getAllPages: should read a collection with the hydra: prefix", async () => {

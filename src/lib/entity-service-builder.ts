@@ -94,12 +94,25 @@ const entityServiceBuilder = <
 				: fetchOptions;
 
 	const parseIri = (iriOrId: EntityIri | IriId<EntityIri>): string =>
-		typeof iriOrId === "string" && iriOrId.startsWith("/")
+		typeof iriOrId === "string" && /^(\/|[a-z][a-z\d+.-]*:\/\/)/i.test(iriOrId)
 			? iriOrId
 			: `${entityPath}/${iriOrId}`;
 
+	const toBody = <T extends object>(body: T, keepId: boolean) =>
+		Object.getPrototypeOf(body) !== Object.prototype
+			? body
+			: (Object.fromEntries(
+					Object.entries(body).filter(
+						([key, value]) =>
+							!key.startsWith("@") &&
+							(key !== "id" || (keepId && value != null)),
+					),
+				) as T);
+
 	const create = (body: EntityBody) =>
-		fetcher.post<Item<Entity, EntityIri>, EntityBody>(entityPath).fetch(body);
+		fetcher
+			.post<Item<Entity, EntityIri>, EntityBody>(entityPath)
+			.fetch(toBody(body, true));
 
 	const get = <P extends PropertyPath<Item<Entity, EntityIri>>[]>(
 		iriOrId: EntityIri | IriId<EntityIri>,
@@ -124,14 +137,17 @@ const entityServiceBuilder = <
 		idOrIriOrBody:
 			| ObjectWithId<Partial<EntityBody>, EntityIri>
 			| EntityIri
-			| number,
+			| IriId<EntityIri>,
 		maybeBody?: Partial<EntityBody>,
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
 				? (idOrIriOrBody["@id"] ?? idOrIriOrBody.id)
 				: idOrIriOrBody;
-		const body = typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!;
+		const body = toBody(
+			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
+			false,
+		);
 		return fetcher
 			.patch<
 				Item<Entity, EntityIri>,
@@ -151,7 +167,10 @@ const entityServiceBuilder = <
 			typeof idOrIriOrBody === "object"
 				? (idOrIriOrBody["@id"] ?? idOrIriOrBody.id)!
 				: idOrIriOrBody;
-		const body = typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!;
+		const body = toBody(
+			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
+			false,
+		);
 
 		return fetcher
 			.put<Item<Entity, EntityIri>, EntityBody>(parseIri(iri))
@@ -165,9 +184,9 @@ const entityServiceBuilder = <
 			(body as ObjectWithId<Partial<EntityBody>, EntityIri>)["@id"] ??
 			(body as ObjectWithId<Partial<EntityBody>, EntityIri>).id;
 
-		return id !== undefined
-			? update(body as ObjectWithId<Partial<EntityBody>, EntityIri>)
-			: create(body as EntityBody);
+		return id == null
+			? create(body as EntityBody)
+			: update(body as ObjectWithId<Partial<EntityBody>, EntityIri>);
 	};
 
 	const getAllPages = async (
@@ -209,6 +228,8 @@ const entityServiceBuilder = <
 
 		const members: unknown[] = [];
 		let page = 0;
+		let next: string | undefined;
+		let hasMore = totalItems !== 0;
 		let shouldContinue = await onProgress?.({
 			page: 0,
 			fetchedItems: 0,
@@ -216,17 +237,23 @@ const entityServiceBuilder = <
 			progressPercent: 0,
 		});
 
-		while (
-			shouldContinue !== false &&
-			(totalItems === undefined || members.length < totalItems)
-		) {
-			const pageMembers = (await fetchPage(page, ITEMS_PER_PAGE))[
-				`${prefix}member`
-			] as unknown[];
+		while (shouldContinue !== false && hasMore) {
+			const pageData =
+				next === undefined
+					? await fetchPage(page, ITEMS_PER_PAGE)
+					: await fetcher.get<Record<string, unknown>>(next).fetch();
+			const pageMembers = pageData[`${prefix}member`] as unknown[];
+			const view = pageData[`${prefix}view`] as
+				| Record<string, unknown>
+				| undefined;
 			if (pageMembers.length === 0) break;
 
 			members.push(...pageMembers);
 			page++;
+			next = view?.[`${prefix}next`] as string | undefined;
+			hasMore =
+				next !== undefined ||
+				(totalItems !== undefined && members.length < totalItems);
 
 			shouldContinue = await onProgress?.({
 				page,

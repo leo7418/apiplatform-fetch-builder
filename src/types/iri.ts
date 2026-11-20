@@ -3,9 +3,16 @@ export type Iri<
 	Id extends string | number = number,
 > = `/${I}/${Id}`;
 
-export type AnyIri = Iri<string, string | number>;
+export type AbsoluteIri<
+	I extends string,
+	Id extends string | number = number,
+> = `${string}//${string}/${I}/${Id}`;
 
-export type GetIri<I> = I extends `/${string}/${string}` ? I : never;
+export type AnyIri =
+	| Iri<string, string | number>
+	| AbsoluteIri<string, string | number>;
+
+export type GetIri<I> = I extends AnyIri ? I : never;
 
 export type IriId<I extends string> = I extends `${string}/${infer Rest}`
 	? IriId<Rest>

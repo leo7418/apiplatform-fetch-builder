@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import entityServiceBuilder from "../lib/entity-service-builder.ts";
 import fetchBuilder from "../lib/fetch-builder.ts";
 import type { Collection } from "./collection.ts";
-import type { GetIri, Iri, IriId } from "./iri.ts";
+import type { AbsoluteIri, GetIri, Iri, IriId } from "./iri.ts";
 import type { Item } from "./item.ts";
 import type { PropertyPath } from "./property-path.ts";
 import type { PropertyValue } from "./property-value.ts";
@@ -25,6 +25,12 @@ type User = {
 };
 type Users = Collection<User, UserIri>;
 
+type CustomerIri = AbsoluteIri<"api/customers", string>;
+type Customer = Item<{ name: string; city: string }, CustomerIri>;
+type OrderIri = AbsoluteIri<"api/orders">;
+type Order = { reference: string; customer: Customer | CustomerIri };
+type Orders = Collection<Order, OrderIri>;
+
 const api = fetchBuilder("https://example.com/api");
 
 const respond = (body: unknown) => {
@@ -40,7 +46,10 @@ describe("types", () => {
 			Equal<IriId<CompanyIri>, string>,
 			Equal<GetIri<UserIri | Company>, UserIri>,
 			Equal<GetIri<string>, never>,
-		] = [true, true, true, true, true];
+			Equal<IriId<OrderIri>, number>,
+			Equal<IriId<CustomerIri>, string>,
+			Equal<GetIri<OrderIri | Customer>, OrderIri>,
+		] = [true, true, true, true, true, true, true, true];
 
 		assert.ok(checks.every(Boolean));
 	});
@@ -58,6 +67,35 @@ describe("types", () => {
 		];
 
 		assert.equal(paths.length, 7);
+	});
+
+	test("filters should accept any name and sorting only property paths", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({}), { status: 200 });
+		};
+
+		await api
+			.get<Users>("/users")
+			.withOptions({
+				sortBy: [{ id: "company.name", desc: false }],
+				filters: [
+					{ id: "name", value: "Alice" },
+					{ id: "exists", value: { email: true } },
+				],
+			})
+			.fetch();
+		await api
+			.get<Users>("/users")
+			// @ts-expect-error sorting takes a property path
+			.withOptions({ sortBy: [{ id: "unknown", desc: false }] })
+			.fetch();
+
+		assert.equal(
+			urls[0],
+			"https://example.com/api/users?order%5Bcompany.name%5D=ASC&name=Alice&exists%5Bemail%5D=true",
+		);
 	});
 
 	test("selected properties should narrow the response", async () => {
@@ -113,6 +151,61 @@ describe("types", () => {
 		const company: Company | CompanyIri = users.member[0].company;
 
 		assert.equal(company, "/api/companies/acme");
+	});
+
+	test("absolute IRIs should behave like path IRIs", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(
+				JSON.stringify({
+					member: [
+						{
+							"@id": "https://example.com/api/orders/1",
+							"@type": "Order",
+							customer: {
+								"@id": "https://example.com/api/customers/acme",
+								"@type": "Customer",
+								name: "Acme",
+							},
+						},
+					],
+					totalItems: 1,
+				}),
+				{ status: 200 },
+			);
+		};
+
+		const orders = await api
+			.get<Orders>("/orders")
+			.withOptions({ properties: ["customer.name"] })
+			.fetch();
+		const [order] = orders.member;
+		const orderIri: OrderIri = order["@id"];
+		const customerName: string = order.customer.name;
+		// @ts-expect-error city was not selected
+		assert.equal(order.customer.city, undefined);
+
+		const networkPathIri: OrderIri = "//example.com/api/orders/1";
+		// @ts-expect-error a path is not an absolute IRI
+		const pathIri: OrderIri = "/api/orders/1";
+
+		const service = entityServiceBuilder<OrderIri, Order, Order>(
+			api,
+			"/orders",
+		);
+		await service.get(1);
+		await service.get(orderIri);
+		await service.get(networkPathIri);
+		await service.get(pathIri);
+		// @ts-expect-error a numeric-id service takes a number or its IRI
+		await service.get("acme");
+
+		assert.equal(customerName, "Acme");
+		assert.deepEqual(
+			urls.slice(1, 5),
+			Array(4).fill("https://example.com/api/orders/1"),
+		);
 	});
 
 	test("a wrapper should narrow the response of a custom search endpoint", async () => {
