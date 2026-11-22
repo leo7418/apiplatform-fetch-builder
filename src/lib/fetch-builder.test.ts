@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 
@@ -115,6 +116,16 @@ describe("fetch-builder tests methods", () => {
 			.patch<{ updated: boolean }, typeof patchData>("/resource")
 			.fetch(patchData);
 		assert.deepEqual(result, { updated: true });
+	});
+
+	test("DELETE: should read the body it does not return", async () => {
+		const response = new Response(JSON.stringify({ deleted: true }), {
+			status: 200,
+		});
+		global.fetch = async () => response;
+
+		assert.equal(await fetcher.delete("/test/1").fetch(), null);
+		assert.equal(response.bodyUsed, true);
 	});
 
 	test("DELETE: should return null", async () => {
@@ -389,6 +400,45 @@ describe("fetch-builder withHeaders", () => {
 	});
 });
 
+describe("fetch-builder header sources", () => {
+	test("withHeaders: should keep the headers it was given", async () => {
+		const sent: (string | null)[] = [];
+		global.fetch = async (_input, init) => {
+			sent.push(new Headers(init?.headers).get("X-Version"));
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+		const headers = new Headers({ "X-Version": "1" });
+		const record = { "X-Version": "1" };
+
+		const fromHeaders = fetcher.get<object>("/test").withHeaders(headers);
+		const fromRecord = fetcher.get<object>("/test").withHeaders(record);
+		const fromArgument = fetcher.get<object>("/test", record);
+		const fromMap = fetcher
+			.get<object>("/test")
+			.withHeaders(new Map([["X-Version", "1"]]) as unknown as HeadersInit);
+		const pairs: [string, string][] = [["X-Version", "1"]];
+		const fromPairs = fetcher.get<object>("/test").withHeaders(pairs);
+		headers.set("X-Version", "2");
+		record["X-Version"] = "2";
+		pairs[0][1] = "2";
+		await fromHeaders.fetch();
+		await fromRecord.fetch();
+		await fromArgument.fetch();
+		await fromMap.fetch();
+		await fromPairs.fetch();
+
+		assert.deepEqual(sent, ["1", "1", "1", "1", "1"]);
+		await assert.rejects(
+			() =>
+				fetcher
+					.get<object>("/test")
+					.withHeaders([["X-Version"]] as unknown as HeadersInit)
+					.fetch(),
+			TypeError,
+		);
+	});
+});
+
 describe("fetch-builder withBody", () => {
 	test("withBody: should pre-configure body and allow fetch() without args", async () => {
 		const body = { foo: "bar" };
@@ -572,7 +622,7 @@ describe("fetch-builder refreshAuth", () => {
 		assert.equal(refreshAuth.mock.callCount(), 1);
 	});
 
-	test("refreshAuth: should not share the refresh between separate fetchers", async () => {
+	test("refreshAuth: should share the refresh between fetchers built from the same config", async () => {
 		let token = "expired-token";
 		const refreshAuth = mock.fn(async () => {
 			token = "refreshed-token";
@@ -583,19 +633,252 @@ describe("fetch-builder refreshAuth", () => {
 						status: 401,
 					})
 				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
-
-		const build = () =>
-			fetchBuilder("https://example.com", {
-				headers: () => ({ Authorization: `Bearer ${token}` }),
-				refreshAuth,
-			});
+		const config = {
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth,
+		};
 
 		await Promise.all([
-			build().get<object>("/first").fetch(),
-			build().get<object>("/second").fetch(),
+			fetchBuilder("https://example.com", config).get<object>("/a").fetch(),
+			fetchBuilder("https://example.com", config).get<object>("/b").fetch(),
 		]);
 
+		assert.equal(refreshAuth.mock.callCount(), 1);
+	});
+
+	test("refreshAuth: should refresh each fetcher built on its own, and each API", async () => {
+		const refreshed: string[] = [];
+		const valid = new Set<string>();
+		global.fetch = async (input) =>
+			valid.has(new URL(input.toString()).origin)
+				? new Response(JSON.stringify({ data: "ok" }), { status: 200 })
+				: new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					});
+		const refreshAuth = async () => {
+			refreshed.push("called");
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			valid.add("https://one.example.com").add("https://two.example.com");
+		};
+		const config = { refreshAuth };
+
+		await Promise.all([
+			fetchBuilder("https://one.example.com", config).get<object>("/a").fetch(),
+			fetchBuilder("https://two.example.com", config).get<object>("/b").fetch(),
+			fetchBuilder("https://one.example.com", { refreshAuth })
+				.get<object>("/c")
+				.fetch(),
+		]);
+
+		assert.equal(refreshed.length, 3);
+	});
+
+	test("refreshAuth: should start a new refresh for a later 401", async () => {
+		let valid = false;
+		const refreshAuth = mock.fn(async () => {
+			valid = true;
+		});
+		global.fetch = async () =>
+			valid
+				? new Response(JSON.stringify({ data: "ok" }), { status: 200 })
+				: new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					});
+
+		const refreshFetcher = fetchBuilder("https://example.com", { refreshAuth });
+		await refreshFetcher.get<object>("/first").fetch();
+		valid = false;
+		await refreshFetcher.get<object>("/second").fetch();
+
 		assert.equal(refreshAuth.mock.callCount(), 2);
+	});
+
+	test("refreshAuth: should refresh each identity served by the same fetcher", async () => {
+		const user = new AsyncLocalStorage<"alice" | "bob">();
+		const tokens = { alice: "expired-alice", bob: "expired-bob" };
+		const refreshed: string[] = [];
+		global.fetch = async (_input, init) =>
+			new Headers(init?.headers).get("Authorization")?.includes("expired")
+				? new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					})
+				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			headers: () => ({ Authorization: `Bearer ${tokens[user.getStore()!]}` }),
+			refreshAuth: async () => {
+				const name = user.getStore()!;
+				refreshed.push(name);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				tokens[name] = `fresh-${name}`;
+			},
+		});
+
+		const results = await Promise.all([
+			user.run("alice", () => refreshFetcher.get<object>("/a").fetch()),
+			user.run("bob", () => refreshFetcher.get<object>("/b").fetch()),
+		]);
+
+		assert.deepEqual(results, [{ data: "ok" }, { data: "ok" }]);
+		assert.deepEqual(refreshed.sort(), ["alice", "bob"]);
+	});
+
+	test("refreshAuth: should not refresh again for a 401 received after the refresh", async () => {
+		let token = "expired-token";
+		const refreshAuth = mock.fn(async () => {
+			token = "refreshed-token";
+		});
+		global.fetch = async (input, init) => {
+			if (
+				new Headers(init?.headers).get("Authorization") !==
+				"Bearer expired-token"
+			) {
+				return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+			}
+			if (input.toString().endsWith("/slow")) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			return new Response(JSON.stringify({ detail: "Unauthorized" }), {
+				status: 401,
+			});
+		};
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			headers: () => ({ Authorization: `Bearer ${token}` }),
+			refreshAuth,
+		});
+
+		const results = await Promise.all([
+			refreshFetcher.get<object>("/fast").fetch(),
+			refreshFetcher.get<object>("/slow").fetch(),
+		]);
+
+		assert.deepEqual(results, [{ data: "ok" }, { data: "ok" }]);
+		assert.equal(refreshAuth.mock.callCount(), 1);
+	});
+
+	test("refreshAuth: should refresh once when the credentials change at every request", async () => {
+		let valid = false;
+		let signature = 0;
+		const refreshAuth = mock.fn(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			valid = true;
+		});
+		const fetchMock = mock.fn(async () =>
+			valid
+				? new Response(JSON.stringify({ data: "ok" }), { status: 200 })
+				: new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					}),
+		);
+		global.fetch = fetchMock;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			headers: () => ({ Authorization: `Signature ${signature++}` }),
+			refreshAuth,
+		});
+
+		await Promise.all([
+			refreshFetcher.get<object>("/first").fetch(),
+			refreshFetcher.get<object>("/second").fetch(),
+			refreshFetcher.get<object>("/third").fetch(),
+		]);
+
+		assert.equal(refreshAuth.mock.callCount(), 1);
+		assert.equal(fetchMock.mock.callCount(), 6);
+
+		valid = false;
+		await assert.rejects(
+			() =>
+				refreshFetcher
+					.post<object, ReadableStream>("/upload")
+					.fetch(new Blob(["abc"]).stream()),
+			{ name: "ApiError", status: 401 },
+		);
+		assert.equal(refreshAuth.mock.callCount(), 2);
+	});
+
+	test("refreshAuth: should read the 401 response before the retry", async () => {
+		const responses = [
+			new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 }),
+			new Response(JSON.stringify({ data: "ok" }), { status: 200 }),
+		];
+		const [unauthorized] = responses;
+		global.fetch = async () => responses.shift()!;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: () => {},
+		});
+
+		await refreshFetcher.get<object>("/secure").fetch();
+		assert.equal(unauthorized.bodyUsed, true);
+	});
+
+	test("refreshAuth: should retry when the body of the 401 response cannot be read", async () => {
+		const responses = [
+			new Response(
+				new ReadableStream({
+					start: (controller) => controller.error(new TypeError("terminated")),
+				}),
+				{ status: 401 },
+			),
+			new Response(JSON.stringify({ data: "ok" }), { status: 200 }),
+		];
+		global.fetch = async () => responses.shift()!;
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: () => {},
+		});
+
+		assert.deepEqual(await refreshFetcher.get<object>("/secure").fetch(), {
+			data: "ok",
+		});
+	});
+
+	test("refreshAuth: should let a request be aborted while it waits for the refresh", async () => {
+		let refreshed = false;
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Unauthorized" }), {
+				status: 401,
+			});
+		const controller = new AbortController();
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: async () => {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				refreshed = true;
+			},
+		});
+		const pending = refreshFetcher
+			.get<object>("/secure")
+			.fetch({ signal: controller.signal });
+		setTimeout(() => controller.abort(), 5);
+
+		await assert.rejects(pending, { name: "AbortError" });
+		assert.equal(refreshed, false);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+	});
+
+	test("refreshAuth: should let a clone use its own hook", async () => {
+		const refreshAuth = mock.fn();
+		const cloneRefreshAuth = mock.fn();
+		let calls = 0;
+		global.fetch = async () =>
+			calls++ % 2 === 0
+				? new Response(JSON.stringify({ detail: "Unauthorized" }), {
+						status: 401,
+					})
+				: new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+
+		const refreshFetcher = fetchBuilder("https://example.com", { refreshAuth });
+		await refreshFetcher.get<object>("/first").fetch();
+		await refreshFetcher
+			.clone({ refreshAuth: cloneRefreshAuth })
+			.get<object>("/second")
+			.fetch();
+
+		assert.equal(refreshAuth.mock.callCount(), 1);
+		assert.equal(cloneRefreshAuth.mock.callCount(), 1);
 	});
 
 	test("refreshAuth: should accept the same response object for the retry", async () => {
@@ -682,6 +965,58 @@ describe("fetch-builder refreshAuth", () => {
 		assert.equal(onUnauthorizedMock.mock.callCount(), 0);
 	});
 
+	test("refreshAuth: should give a fetcher whose 401 does not start another refresh", async () => {
+		const refreshAuth = mock.fn();
+		const onUnauthorizedMock = mock.fn();
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Unauthorized" }), {
+				status: 401,
+			});
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: async (auth) => {
+				refreshAuth();
+				await auth.post<object, object>("/token/refresh").fetch({});
+			},
+			onUnauthorized: onUnauthorizedMock,
+		});
+
+		await assert.rejects(() => refreshFetcher.get<object>("/secure").fetch(), {
+			name: "ApiError",
+			status: 401,
+		});
+		assert.equal(refreshAuth.mock.callCount(), 1);
+		assert.equal(onUnauthorizedMock.mock.callCount(), 1);
+	});
+
+	test("refreshAuth: should call onUnauthorized once for the requests of a refused refresh", async () => {
+		const onUnauthorizedMock = mock.fn();
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Unauthorized" }), {
+				status: 401,
+			});
+
+		const refreshFetcher = fetchBuilder("https://example.com", {
+			refreshAuth: async () => {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				throw new ApiError(401, { detail: "Refresh token expired" });
+			},
+			onUnauthorized: onUnauthorizedMock,
+		});
+
+		const results = await Promise.allSettled([
+			refreshFetcher.get<object>("/first").fetch(),
+			refreshFetcher.get<object>("/second").fetch(),
+			refreshFetcher.get<object>("/third").fetch(),
+		]);
+
+		assert.deepEqual(
+			results.map(({ status }) => status),
+			["rejected", "rejected", "rejected"],
+		);
+		assert.equal(onUnauthorizedMock.mock.callCount(), 1);
+	});
+
 	test("refreshAuth: should not call onUnauthorized when the refresh fails for another reason", async () => {
 		const onUnauthorizedMock = mock.fn();
 		global.fetch = async () =>
@@ -692,6 +1027,7 @@ describe("fetch-builder refreshAuth", () => {
 		for (const failure of [
 			new TypeError("fetch failed"),
 			new ApiError(503, "Service Unavailable"),
+			new ApiError(429, "Too Many Requests"),
 		]) {
 			const refreshFetcher = fetchBuilder("https://example.com", {
 				refreshAuth: async () => {
@@ -1025,6 +1361,160 @@ describe("fetch-builder fetchRaw", () => {
 	});
 });
 
+describe("fetch-builder error headers", () => {
+	test("should give the headers of the error response", async () => {
+		global.fetch = async () =>
+			new Response(JSON.stringify({ detail: "Too many requests" }), {
+				status: 429,
+				headers: { "Retry-After": "30" },
+			});
+
+		await assert.rejects(
+			() => fetcher.get<object>("/users").fetch(),
+			(error) => {
+				assert.ok(error instanceof ApiError);
+				assert.equal(error.headers.get("Retry-After"), "30");
+				return true;
+			},
+		);
+		assert.equal(new ApiError(401, null).headers.get("Retry-After"), null);
+	});
+
+	test("should give the target of a redirect that is not followed", async () => {
+		global.fetch = async () =>
+			new Response(null, {
+				status: 302,
+				headers: { Location: "https://storage.test/file.pdf" },
+			});
+
+		await assert.rejects(
+			() => fetcher.get<object>("/files/1").fetchRaw(),
+			(error) => {
+				assert.ok(error instanceof ApiError);
+				assert.equal(
+					error.headers.get("Location"),
+					"https://storage.test/file.pdf",
+				);
+				return true;
+			},
+		);
+	});
+});
+
+describe("fetch-builder redirects", () => {
+	test("should not follow a redirect answered by the API", async () => {
+		const modes: (RequestRedirect | undefined)[] = [];
+		global.fetch = async (_input, init) => {
+			modes.push(init?.redirect);
+			return new Response(null, {
+				status: 307,
+				headers: { Location: "https://elsewhere.test/users" },
+			});
+		};
+
+		await assert.rejects(() => fetcher.get<object>("/users").fetch(), {
+			name: "ApiError",
+			message: "Redirect not followed",
+			status: 307,
+		});
+		await assert.rejects(
+			() => fetcher.get<object>("/users").fetch({ redirect: "follow" }),
+			{ name: "ApiError", status: 307 },
+		);
+		await assert.rejects(
+			() => fetcher.get<object>("/users").fetch({ redirect: undefined }),
+			{ name: "ApiError", status: 307 },
+		);
+		assert.deepEqual(modes, ["manual", "follow", "manual"]);
+	});
+
+	test("should report the redirect a browser hides", async () => {
+		global.fetch = async () =>
+			({
+				type: "opaqueredirect",
+				status: 0,
+				ok: false,
+				headers: new Headers(),
+				text: async () => "",
+			}) as Response;
+
+		await assert.rejects(() => fetcher.get<object>("/users").fetch(), {
+			name: "ApiError",
+			message: "Redirect not followed",
+			status: 0,
+		});
+	});
+
+	test("should keep a 304 answer apart from redirects", async () => {
+		global.fetch = async () => new Response(null, { status: 304 });
+
+		await assert.rejects(() => fetcher.get<object>("/users").fetch(), {
+			name: "ApiError",
+			message: "Request failed with status 304",
+			status: 304,
+		});
+	});
+});
+
+describe("fetch-builder entrypoint", () => {
+	test("should resolve a relative entrypoint against the page", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+		Object.defineProperty(globalThis, "location", {
+			configurable: true,
+			value: { href: "https://app.example.com/dashboard" },
+		});
+
+		try {
+			await fetchBuilder("/api").get<object>("/users").fetch();
+		} finally {
+			Reflect.deleteProperty(globalThis, "location");
+		}
+
+		assert.deepEqual(urls, ["https://app.example.com/api/users"]);
+	});
+
+	test("should resolve a relative entrypoint once for a fetcher and its clones", async () => {
+		const urls: string[] = [];
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+		const locate = (href: string) =>
+			Object.defineProperty(globalThis, "location", {
+				configurable: true,
+				value: { href },
+			});
+
+		try {
+			locate("https://app.example.com/");
+			const relative = fetchBuilder("api");
+			await relative.get<object>("/users").fetch();
+			locate("https://app.example.com/dashboard/users/12");
+			await relative.clone().get<object>("/orders").fetch();
+		} finally {
+			Reflect.deleteProperty(globalThis, "location");
+		}
+
+		assert.deepEqual(urls, [
+			"https://app.example.com/api/users",
+			"https://app.example.com/api/orders",
+		]);
+	});
+
+	test("should reject the requests of an entrypoint that is not a URL", async () => {
+		const relative = fetchBuilder("/api");
+
+		await assert.rejects(
+			() => relative.get<object>("/users").fetch(),
+			TypeError,
+		);
+	});
+});
+
 describe("fetch-builder entrypoint path", () => {
 	const urls: string[] = [];
 	const prefixed = fetchBuilder("https://example.com/api/");
@@ -1099,9 +1589,34 @@ describe("fetch-builder date filters", () => {
 			})
 			.fetch();
 
+		await fetcher
+			.get<{ items: object[] }>("/items")
+			.withOptions({
+				filters: [
+					{ id: "publishedAt", value: { after: undefined, before: null } },
+				],
+			})
+			.fetch();
+
 		assert.deepEqual(urls, [
 			"https://example.com/items?publishedAt%5Bafter%5D=2020-01-01T00%3A00%3A00.000Z",
+			"https://example.com/items",
 		]);
+		for (const value of [new Date(), new Map()]) {
+			await assert.rejects(
+				() =>
+					fetcher
+						.get<{ items: object[] }>("/items")
+						.withOptions({
+							filters: [{ id: "publishedAt", value: value as never }],
+						})
+						.fetch(),
+				{
+					name: "TypeError",
+					message: 'Unsupported filter value: "publishedAt"',
+				},
+			);
+		}
 	});
 });
 

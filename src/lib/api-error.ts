@@ -5,16 +5,19 @@ export class ApiError extends Error {
 	readonly status: number;
 	/** Parsed JSON body of the error response, or its raw text when it is not JSON. */
 	readonly body: unknown;
+	/** Headers of the error response; empty when the error does not come from a response. */
+	readonly headers: Headers;
 
 	constructor(
 		status: number,
 		body: unknown,
-		options: { message?: string; cause?: unknown } = {},
+		options: { message?: string; cause?: unknown; headers?: Headers } = {},
 	) {
 		super(options.message ?? `Request failed with status ${status}`, options);
 		this.name = "ApiError";
 		this.status = status;
 		this.body = body;
+		this.headers = options.headers ?? new Headers();
 	}
 }
 

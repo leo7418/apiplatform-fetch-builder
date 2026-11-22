@@ -564,6 +564,62 @@ describe("entityServiceBuilder", () => {
 		});
 	});
 
+	test("getAllPages: should not ask again when the first page fails for another reason", async () => {
+		const { entityService } = makeService();
+		let callCount = 0;
+
+		global.fetch = async () => {
+			callCount++;
+			return new Response(JSON.stringify({ detail: "Server error" }), {
+				status: 500,
+			});
+		};
+
+		await assert.rejects(() => entityService.getAllPages(), {
+			name: "ApiError",
+			status: 500,
+		});
+		assert.strictEqual(callCount, 1);
+	});
+
+	test("getAllPages: should refuse a response that is not a collection", async () => {
+		const { entityService } = makeService();
+
+		global.fetch = async () =>
+			new Response(JSON.stringify([makeItem(1, "A")]), { status: 200 });
+
+		const refusal = {
+			name: "TypeError",
+			message: '"/entities" did not return a collection',
+		};
+		await assert.rejects(() => entityService.getAllPages(), refusal);
+		await assert.rejects(() => entityService.getAllPages(() => false), refusal);
+
+		global.fetch = async () => new Response("null", { status: 200 });
+		await assert.rejects(() => entityService.getAllPages(), refusal);
+	});
+
+	test("should ignore a trailing slash in the path of the resource", async () => {
+		const service = entityServiceBuilder<EntityIri, EntityBody, Entity>(
+			"https://example.com",
+			"/entities/",
+		);
+		const urls: string[] = [];
+
+		global.fetch = async (input) => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ member: [] }), { status: 200 });
+		};
+
+		await service.get(1);
+		await service.getAll();
+
+		assert.deepStrictEqual(urls, [
+			"https://example.com/entities/1",
+			"https://example.com/entities",
+		]);
+	});
+
 	test("getAllPages: should follow the next link of each page", async () => {
 		const { entityService } = makeService();
 		const allMembers = [1, 2, 3, 4, 5].map((id) =>

@@ -5,7 +5,7 @@ import entityServiceBuilder from "../lib/entity-service-builder.ts";
 import fetchBuilder from "../lib/fetch-builder.ts";
 import type { Collection, PartialCollection } from "./collection.ts";
 import type { AbsoluteIri, GetIri, Iri, IriId } from "./iri.ts";
-import type { Item } from "./item.ts";
+import type { Embedded, Item } from "./item.ts";
 import type { PropertyPath } from "./property-path.ts";
 import type { PropertyValue } from "./property-value.ts";
 
@@ -185,6 +185,97 @@ describe("types", () => {
 		assert.ok(checks.every(Boolean));
 	});
 
+	test("an embedded relation should keep its identity keys and any should stay any", () => {
+		type Task = {
+			name: string;
+			owner: Company;
+			payload: ReturnType<typeof JSON.parse>;
+		};
+		type Tasks = Collection<Task, Iri<"api/tasks">>;
+		type Selected<P extends PropertyPath<Tasks>> = PropertyValue<
+			Tasks,
+			P
+		>["member"][number];
+
+		const checks: [
+			Equal<Selected<"owner.name">["owner"]["@id"], CompanyIri>,
+			Equal<Selected<"owner.name">["owner"]["@type"], string>,
+			Equal<Selected<"owner.name">["owner"]["name"], string>,
+			0 extends 1 & Selected<"payload">["payload"] ? true : false,
+			0 extends 1 & Selected<PropertyPath<Tasks>>["payload"] ? true : false,
+		] = [true, true, true, true, true];
+
+		assert.ok(checks.every(Boolean));
+	});
+
+	test("a relation back to a resource being read may come as its IRI", () => {
+		type MemberIri = Iri<"api/members">;
+		type TeamIri = Iri<"api/teams">;
+		type Member = { name: string; team: Team | TeamIri };
+		type Team = Item<
+			{
+				name: string;
+				lead: Item<Member, MemberIri> | MemberIri;
+				members: (Item<Member, MemberIri> | MemberIri)[];
+			},
+			TeamIri
+		>;
+		type Selected<P extends PropertyPath<Item<Member, MemberIri>>> =
+			PropertyValue<Item<Member, MemberIri>, P>;
+		type Lead = Selected<"team.lead.name">["team"]["lead"];
+		type Listed = Selected<"team.members.name">["team"]["members"][number];
+
+		const checks: [
+			MemberIri extends Lead ? true : false,
+			MemberIri extends Listed ? true : false,
+			Equal<Exclude<Lead, string>["name"], string>,
+			Equal<Exclude<Listed, string>["@id"], MemberIri>,
+			TeamIri extends Selected<"team.name">["team"] ? false : true,
+		] = [true, true, true, true, true];
+
+		assert.ok(checks.every(Boolean));
+	});
+
+	test("a relation to the same kind of resource should stay embedded one level down", () => {
+		type CategoryIri = Iri<"api/categories", string>;
+		type Category = { label: string; parent: Parent | CategoryIri | null };
+		type Parent = Embedded<Category, CategoryIri>;
+		type Selected<P extends PropertyPath<Item<Category, CategoryIri>>> =
+			PropertyValue<Item<Category, CategoryIri>, P>;
+
+		const checks: [
+			CategoryIri extends Selected<"parent.label">["parent"] ? false : true,
+			CategoryIri extends NonNullable<
+				Selected<"parent.parent.label">["parent"]
+			>["parent"]
+				? true
+				: false,
+		] = [true, true];
+
+		assert.ok(checks.every(Boolean));
+	});
+
+	test("an embedded relation can be declared without a context", () => {
+		type Owner = Embedded<{ name: string; city: string }, CompanyIri>;
+		type Task = { name: string; owner: Owner; company: Owner | CompanyIri };
+		type Tasks = Collection<Task, Iri<"api/tasks">>;
+		type Selected<P extends PropertyPath<Tasks>> = PropertyValue<
+			Tasks,
+			P
+		>["member"][number];
+		const paths: PropertyPath<Tasks>[] = ["owner.name", "company.city"];
+
+		const checks: [
+			"@context" extends keyof Owner ? false : true,
+			Equal<Selected<"owner.name">["owner"]["name"], string>,
+			Equal<Selected<"company">["company"], CompanyIri>,
+			Alike<Selected<"owner">["owner"], Owner>,
+		] = [true, true, true, true];
+
+		assert.equal(paths.length, 2);
+		assert.ok(checks.every(Boolean));
+	});
+
 	test("a response without selected properties should keep its declared type", async () => {
 		respond({ member: [], totalItems: 0 });
 
@@ -221,7 +312,7 @@ describe("types", () => {
 			UserIri,
 			{ name: string },
 			User,
-			"partial"
+			{ pagination: "partial" }
 		>(api, "/users");
 
 		const page = await logs.getAll();
@@ -236,6 +327,146 @@ describe("types", () => {
 		assert.equal(total, 0);
 	});
 
+	test("a service without output should resolve its writes with null", async () => {
+		global.fetch = async () => new Response(null, { status: 204 });
+		const settings = entityServiceBuilder<
+			UserIri,
+			{ name: string },
+			User,
+			{ output: false }
+		>(api, "/settings");
+
+		const created: null = await settings.create({ name: "Dark" });
+		const updated: null = await settings.update(1, { name: "Light" });
+
+		assert.deepEqual([created, updated], [null, null]);
+	});
+
+	test("upsert should accept a body without an identifier yet", async () => {
+		respond({ "@id": "/api/users/1", "@type": "User", name: "Alice" });
+		const users = entityServiceBuilder<UserIri, { name: string }, User>(
+			api,
+			"/users",
+		);
+
+		await users.upsert({ name: "Alice" });
+		await users.upsert({ id: null, name: "Alice" });
+		await users.upsert({ id: "", name: "Alice" });
+		await users.upsert({ id: 1, name: "Alice" });
+		// @ts-expect-error an identifier is a number or is left out
+		await users.upsert({ id: "one", name: "Alice" });
+	});
+
+	test("properties should narrow a response typed without an item or a collection", async () => {
+		type Address = { city: string; street: string };
+		type Account = {
+			name: string;
+			email: string;
+			address: Address;
+			createdAt: Date;
+			company: Company | CompanyIri;
+		};
+		const paths: PropertyPath<Account>[] = [
+			"name",
+			"address",
+			"address.city",
+			"createdAt",
+			"company.name",
+			// @ts-expect-error a date is not walked
+			"createdAt.getTime",
+			// @ts-expect-error unknown nested property
+			"address.country",
+		];
+
+		respond({ name: "Alice", address: { city: "Paris" } });
+		const account = await api
+			.get<Account>("/accounts/1")
+			.withOptions({ properties: ["name", "address.city", "company"] })
+			.fetch();
+		const name: string = account.name;
+		const city: string = account.address.city;
+		const company: CompanyIri = account.company;
+
+		respond([{ name: "Alice" }]);
+		const accounts = await api
+			.get<Account[]>("/accounts")
+			.withOptions({
+				properties: ["name"],
+				sortBy: [
+					{ id: "name", desc: false },
+					{ id: "balance", desc: true },
+				],
+			})
+			.fetch();
+		const first: string = accounts[0].name;
+
+		assert.equal(paths.length, 7);
+		assert.deepEqual(
+			[name, city, company, first],
+			["Alice", "Paris", undefined, "Alice"],
+		);
+		// @ts-expect-error email was not selected
+		assert.equal(account.email, undefined);
+		// @ts-expect-error street was not selected
+		assert.equal(account.address.street, undefined);
+		// @ts-expect-error email was not selected
+		assert.equal(accounts[0].email, undefined);
+	});
+
+	test("dates, branded values and records should be left as they are", () => {
+		type Uuid = string & { readonly brand: "uuid" };
+		type Event = {
+			uuid: Uuid;
+			startsAt: Date;
+			meta: Record<string, string>;
+			owner: { name: string } | CompanyIri;
+		};
+		type Events = Collection<Event, Iri<"api/events">>;
+		type Selected<P extends PropertyPath<Events>> = PropertyValue<
+			Events,
+			P
+		>["member"][number];
+		const paths: PropertyPath<Events>[] = [
+			"uuid",
+			"startsAt",
+			"meta",
+			"meta.color",
+			"owner.name",
+			// @ts-expect-error a branded string is not walked
+			"uuid.length",
+			// @ts-expect-error a record takes a dotted name
+			"metaTYPO",
+		];
+		type Rows = PropertyValue<readonly Event[], "uuid" | "startsAt">;
+
+		const checks: [
+			Equal<Selected<"uuid">["uuid"], Uuid>,
+			Equal<Selected<"startsAt">["startsAt"], Date>,
+			Equal<Rows[number]["startsAt"], Date>,
+			CompanyIri extends Selected<"owner.name">["owner"] ? false : true,
+		] = [true, true, true, true];
+
+		assert.equal(paths.length, 7);
+		assert.ok(checks.every(Boolean));
+	});
+
+	test("a relation declared as a plain object or an IRI may come back as that IRI", () => {
+		type MemberIri = Iri<"api/members">;
+		type TeamIri = Iri<"api/teams">;
+		type Member = { name: string; team: Team | TeamIri };
+		type Team = { name: string; lead: Member | MemberIri };
+		type Selected<P extends PropertyPath<Item<Member, MemberIri>>> =
+			PropertyValue<Item<Member, MemberIri>, P>;
+		type Lead = Exclude<Selected<"team.lead.name">["team"], string>["lead"];
+
+		const checks: [
+			MemberIri extends Lead ? true : false,
+			Equal<Exclude<Lead, string>["name"], string>,
+		] = [true, true];
+
+		assert.ok(checks.every(Boolean));
+	});
+
 	test("a date filter should take its dates in a record", async () => {
 		respond({ member: [], totalItems: 0 });
 		const date = new Date("2020-01-01T00:00:00Z");
@@ -244,11 +475,15 @@ describe("types", () => {
 			.get<Users>("/users")
 			.withOptions({ filters: [{ id: "createdAt", value: { after: date } }] })
 			.fetch();
-		await api
-			.get<Users>("/users")
-			// @ts-expect-error a date on its own is not a filter value
-			.withOptions({ filters: [{ id: "createdAt", value: date }] })
-			.fetch();
+		await assert.rejects(
+			() =>
+				api
+					.get<Users>("/users")
+					// @ts-expect-error a date on its own is not a filter value
+					.withOptions({ filters: [{ id: "createdAt", value: date }] })
+					.fetch(),
+			TypeError,
+		);
 	});
 
 	test("absolute IRIs should behave like path IRIs", async () => {

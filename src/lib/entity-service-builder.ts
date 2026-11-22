@@ -1,5 +1,6 @@
 import { ApiError } from "./api-error.ts";
 import fetchBuilder, { type GetOptions } from "./fetch-builder.ts";
+import { isObject } from "./utils.ts";
 import type { Collection, PartialCollection } from "../types/collection.ts";
 import type { AnyIri, IriId } from "../types/iri.ts";
 import type { Item } from "../types/item.ts";
@@ -20,18 +21,38 @@ export type OnProgress = (
 type ObjectWithId<T extends object, I extends AnyIri> = T &
 	({ "@id": I; id?: IriId<I> } | { "@id"?: I; id: IriId<I> });
 
+type Unsaved<T> = T | (Omit<T, "id"> & { "@id"?: null; id?: null | "" });
+
+export type EntityServiceOptions = {
+	/** `"partial"` when the resource uses partial pagination, which has no total. */
+	pagination?: "partial";
+	/** `false` when the write operations of the resource return no content. */
+	output?: false;
+};
+
 type Collections<Entity, EntityIri extends AnyIri> = {
 	full: Collection<Entity, EntityIri>;
 	partial: PartialCollection<Entity, EntityIri>;
 };
 
+type Listed<EntityIri extends AnyIri, Entity, Options> = Collections<
+	Entity,
+	EntityIri
+>[Options extends { pagination: "partial" } ? "partial" : "full"];
+
+type Written<EntityIri extends AnyIri, Entity, Options> = Options extends {
+	output: false;
+}
+	? null
+	: Item<Entity, EntityIri>;
+
 type EntityService<
 	EntityIri extends AnyIri,
 	EntityBody extends object,
 	Entity extends object,
-	Pagination extends "full" | "partial" = "full",
+	Options extends EntityServiceOptions = object,
 > = {
-	create: (body: EntityBody) => Promise<Item<Entity, EntityIri>>;
+	create: (body: EntityBody) => Promise<Written<EntityIri, Entity, Options>>;
 	get: {
 		(iriOrId: EntityIri | IriId<EntityIri>): Promise<Item<Entity, EntityIri>>;
 		<P extends PropertyPath<Item<Entity, EntityIri>>[] = []>(
@@ -40,34 +61,32 @@ type EntityService<
 		): Promise<PropertyValue<Item<Entity, EntityIri>, P[number]>>;
 	};
 	getAll: {
-		(): Promise<Collections<Entity, EntityIri>[Pagination]>;
-		<P extends PropertyPath<Collections<Entity, EntityIri>[Pagination]>[] = []>(
-			getOptions: GetOptions<Collections<Entity, EntityIri>[Pagination], P>,
-		): Promise<
-			PropertyValue<Collections<Entity, EntityIri>[Pagination], P[number]>
-		>;
+		(): Promise<Listed<EntityIri, Entity, Options>>;
+		<P extends PropertyPath<Listed<EntityIri, Entity, Options>>[] = []>(
+			getOptions: GetOptions<Listed<EntityIri, Entity, Options>, P>,
+		): Promise<PropertyValue<Listed<EntityIri, Entity, Options>, P[number]>>;
 	};
 	update: {
 		(
 			body: ObjectWithId<Partial<EntityBody>, EntityIri>,
-		): Promise<Item<Entity, EntityIri>>;
+		): Promise<Written<EntityIri, Entity, Options>>;
 		(
 			idOrIri: EntityIri | IriId<EntityIri>,
 			body: Partial<EntityBody>,
-		): Promise<Item<Entity, EntityIri>>;
+		): Promise<Written<EntityIri, Entity, Options>>;
 	};
 	replace: {
 		(
 			body: ObjectWithId<EntityBody, EntityIri>,
-		): Promise<Item<Entity, EntityIri>>;
+		): Promise<Written<EntityIri, Entity, Options>>;
 		(
 			idOrIri: EntityIri | IriId<EntityIri>,
 			body: EntityBody,
-		): Promise<Item<Entity, EntityIri>>;
+		): Promise<Written<EntityIri, Entity, Options>>;
 	};
 	upsert: (
-		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
-	) => Promise<Item<Entity, EntityIri>>;
+		body: Unsaved<EntityBody> | ObjectWithId<Partial<EntityBody>, EntityIri>,
+	) => Promise<Written<EntityIri, Entity, Options>>;
 	getAllPages: {
 		(onProgress?: OnProgress): Promise<Collection<Entity, EntityIri>>;
 		(
@@ -85,7 +104,7 @@ const entityServiceBuilder = <
 	EntityIri extends AnyIri,
 	EntityBody extends object,
 	Entity extends object,
-	Pagination extends "full" | "partial" = "full",
+	Options extends EntityServiceOptions = object,
 >(
 	fetchOptions:
 		| string
@@ -95,13 +114,14 @@ const entityServiceBuilder = <
 		  }
 		| ReturnType<typeof fetchBuilder>,
 	entityPath: string,
-): EntityService<EntityIri, EntityBody, Entity, Pagination> => {
+): EntityService<EntityIri, EntityBody, Entity, Options> => {
 	const fetcher =
 		typeof fetchOptions === "string"
 			? fetchBuilder(fetchOptions)
 			: "entrypoint" in fetchOptions
 				? fetchBuilder(fetchOptions.entrypoint, fetchOptions.config)
 				: fetchOptions;
+	const resourcePath = entityPath.replace(/\/+$/, "");
 
 	const parseIri = (iriOrId: EntityIri | IriId<EntityIri>): string => {
 		if (
@@ -113,7 +133,7 @@ const entityServiceBuilder = <
 		if (iriOrId == null || ["", ".", ".."].includes(String(iriOrId))) {
 			throw new TypeError(`Invalid identifier: "${iriOrId}"`);
 		}
-		return `${entityPath}/${encodeURIComponent(iriOrId)}`;
+		return `${resourcePath}/${encodeURIComponent(iriOrId)}`;
 	};
 
 	const toBody = <T extends object>(body: T, keepId: boolean) =>
@@ -129,7 +149,7 @@ const entityServiceBuilder = <
 
 	const create = (body: EntityBody) =>
 		fetcher
-			.post<Item<Entity, EntityIri>, EntityBody>(entityPath)
+			.post<Item<Entity, EntityIri>, EntityBody>(resourcePath)
 			.fetch(toBody(body, true));
 
 	const get = async <P extends PropertyPath<Item<Entity, EntityIri>>[]>(
@@ -145,7 +165,7 @@ const entityServiceBuilder = <
 	const getAll = <P extends PropertyPath<Collection<Entity, EntityIri>>[]>(
 		getOptions?: GetOptions<Collection<Entity, EntityIri>, P>,
 	) => {
-		const builder = fetcher.get<Collection<Entity, EntityIri>>(entityPath);
+		const builder = fetcher.get<Collection<Entity, EntityIri>>(resourcePath);
 		return getOptions
 			? builder.withOptions(getOptions).fetch()
 			: builder.fetch();
@@ -227,7 +247,7 @@ const entityServiceBuilder = <
 		let pageSize: number | undefined = getOptions?.pageSize ?? 100;
 		const fetchPage = (pageIndex?: number): Promise<Record<string, unknown>> =>
 			fetcher
-				.get<Collection<Entity, EntityIri>>(entityPath)
+				.get<Collection<Entity, EntityIri>>(resourcePath)
 				.withOptions({
 					...getOptions,
 					pageSize,
@@ -246,7 +266,15 @@ const entityServiceBuilder = <
 			pageSize = undefined;
 			return fetchPage();
 		});
-		const prefix = "hydra:member" in first ? "hydra:" : "";
+		const prefix = isObject(first) && "hydra:member" in first ? "hydra:" : "";
+		const membersOf = (pageData: Record<string, unknown>): unknown[] => {
+			const pageMembers = isObject(pageData) && pageData[`${prefix}member`];
+			if (!Array.isArray(pageMembers)) {
+				throw new TypeError(`"${resourcePath}" did not return a collection`);
+			}
+			return pageMembers;
+		};
+		membersOf(first);
 		const totalItems = first[`${prefix}totalItems`] as number | undefined;
 
 		const members: unknown[] = [];
@@ -261,7 +289,7 @@ const entityServiceBuilder = <
 		});
 
 		while (shouldContinue !== false) {
-			const pageMembers = pageData[`${prefix}member`] as unknown[];
+			const pageMembers = membersOf(pageData);
 			const view = pageData[`${prefix}view`] as
 				| Record<string, unknown>
 				| undefined;
@@ -319,7 +347,7 @@ const entityServiceBuilder = <
 		replace,
 		upsert,
 		delete: del,
-	} as EntityService<EntityIri, EntityBody, Entity, Pagination>;
+	} as EntityService<EntityIri, EntityBody, Entity, Options>;
 };
 
 export default entityServiceBuilder;

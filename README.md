@@ -12,7 +12,7 @@
 - **Builder pattern** — chainable `.withOptions()`, `.withHeaders()`
 - **Hydra & ApiPlatform compatible** — pagination, sorting, filtering, property selection
 - **`entityServiceBuilder`** — typed CRUD: `create`, `get`, `getAll`, `getAllPages`, `update`, `replace`, `upsert`, `delete`
-- **Security** — requests never leave the entrypoint origin, safe key assertions on filter/sort ids
+- **Security** — a URL on another origin is refused and a redirect is not followed, so the headers never leave the API; safe key assertions on filter/sort ids
 - **No bundler required** — pure ESM
 
 ## Installation
@@ -61,13 +61,17 @@ const list = await api
   .fetch();
 
 // POST
-const created = await api.post<User, UserBody>("/users").fetch({ name: "Alice" });
+const created = await api
+  .post<User, UserBody>("/users")
+  .fetch({ name: "Alice", email: "alice@example.com" });
 
 // PATCH
 const updated = await api.patch<User, Partial<UserBody>>("/users/1").fetch({ name: "Bob" });
 
 // PUT
-const replaced = await api.put<User, UserBody>("/users/1").fetch({ name: "Carol" });
+const replaced = await api
+  .put<User, UserBody>("/users/1")
+  .fetch({ name: "Carol", email: "carol@example.com" });
 
 // DELETE
 const deleted = await api.delete("/users/1").fetch();
@@ -86,13 +90,15 @@ const result3 = await api
   .fetch();
 
 // Pre-configure body with withBody (POST/PATCH/PUT)
-const builder = api.post<User, UserBody>("/users").withBody({ name: "Alice" });
+const builder = api
+  .post<User, UserBody>("/users")
+  .withBody({ name: "Alice", email: "alice@example.com" });
 const created2 = await builder.fetch(); // no body argument needed
 
 // Cancel a request with AbortSignal
 const controller = new AbortController();
-const result4 = await api.get<User>("/users/1").fetch({ signal: controller.signal });
-controller.abort(); // cancels in-flight request
+const pending = api.get<User>("/users/1").fetch({ signal: controller.signal });
+controller.abort(); // cancels the request: `pending` rejects with an AbortError
 
 // Clone a fetcher with config overrides
 const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
@@ -100,7 +106,7 @@ const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 
 ## Error handling
 
-Every `.fetch()` resolves with the body of the response. A response that is not OK rejects with an `ApiError` carrying the HTTP `status` and the `body` sent by the API (parsed JSON, or the raw text when it is not JSON).
+Every `.fetch()` resolves with the body of the response. A response that is not OK rejects with an `ApiError` carrying the HTTP `status`, the `body` sent by the API (parsed JSON, or the raw text when it is not JSON) and the `headers` of the response.
 
 ```ts
 import { ApiError } from "apiplatform-fetch-builder";
@@ -126,7 +132,7 @@ if (error instanceof ApiError && isHydraError(error.body)) {
 }
 ```
 
-A `POST`, `PATCH`, `PUT` or `DELETE` response without a body (204) resolves with `null`. An OK response that is not JSON, or a `GET` response without a body, rejects with an `ApiError` too: read it with [`fetchRaw()`](#file-downloads). A URL on another origin than the entrypoint is rejected with a `TypeError`, so the token never leaves the API. When the API writes its IRIs with another origin than the one you call (behind a proxy, for instance), list it in `originAliases`: these URLs are then sent to the entrypoint.
+A `POST`, `PATCH`, `PUT` or `DELETE` response without a body (204) resolves with `null`. An OK response that is not JSON, or a `GET` response without a body, rejects with an `ApiError` too: read it with [`fetchRaw()`](#file-downloads). A URL on another origin than the entrypoint is rejected with a `TypeError`, and a redirect answered by the API is not followed but rejects with an `ApiError`, so the headers never leave the API. Outside a browser, its `headers` give the `Location`. Pass `redirect: "follow"` in the config or to `fetch()` to follow redirects, for instance when a path with a trailing slash is redirected. When the API writes its IRIs with another origin than the one you call (behind a proxy, for instance), list it in `originAliases`: these URLs are then sent to the entrypoint.
 
 ## File downloads
 
@@ -140,7 +146,7 @@ const response = await api
   .fetchRaw();
 
 const file = await response.blob();
-const disposition = response.headers.get("Content-Disposition");
+const disposition = response.headers.get("Content-Disposition"); // when the endpoint names its file
 ```
 
 A file served outside the path of the entrypoint, such as `/media/1.png` next to an API under `/api`, is requested with its full URL: the entrypoint path is not prepended to it.
@@ -160,6 +166,8 @@ declare module "apiplatform-fetch-builder" {
   }
 }
 ```
+
+Write it in a file that has an `import` or an `export` (in a declaration file, add `export {};`): alone in a file, the block would replace the types of the package instead of extending them.
 
 `Collection`, `PartialCollection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:title`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
 
@@ -214,7 +222,7 @@ const active = await userService.getAllPages({ filters: [{ id: "status", value: 
 // With progress callback — return false to stop early
 const partial2 = await userService.getAllPages(({ fetchedItems, totalItems, progressPercent }) => {
   console.log(`${progressPercent}% — ${fetchedItems}/${totalItems}`);
-  if (fetchedItems >= 500) return false; // stop after 500 items
+  return fetchedItems < 500; // stop after 500 items
 });
 
 // With both getOptions and onProgress
@@ -262,12 +270,12 @@ entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users"
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entrypoint` | `string` | Base URL of the API. Its path is prepended to every path that does not already start with it, so `/users` and the IRI `/api/users/1` both work with `https://api.example.com/api` |
+| `entrypoint` | `string` | Base URL of the API. Its path is prepended to every path that does not already start with it, so `/users` and the IRI `/api/users/1` both work with `https://api.example.com/api`. In a browser, a relative URL such as `/api` is resolved against the page at the first request, once for the fetcher and its clones; elsewhere its requests reject |
 | `config.originAliases` | `string[]` | Other origins the API uses in its IRIs. A request to one of them is sent to the entrypoint instead |
-| `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request. `withHeaders` and `fetch({ headers })` override them |
-| `config.refreshAuth` | `(fetcher) => void \| Promise<void>` | Called on 401 — the request is then retried once with fresh `headers`. It receives a fetcher for the same API that has neither the `headers` nor these hooks: call the refresh endpoint with it, never with the main fetcher, whose request would wait for the refresh it is part of. Concurrent 401 responses of a fetcher and its clones share a single call, so one fetcher stands for one identity: on a server, build one per request. If it rejects, the request is not retried and the reason is the `cause` of the `ApiError` |
-| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on a 401 that remains after the retry, when the API refuses the refresh (`refreshAuth` rejects with a 4xx `ApiError`), or immediately if there is no `refreshAuth`. A refresh that fails for another reason, such as a network error, does not call it |
-| `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`…) applies to every request; `fetch(options)` overrides it. |
+| `config.headers` | `HeadersInit \| (() => HeadersInit \| Promise<HeadersInit>)` | Headers sent with every request (authentication, language…). A function is called before each request, and once more after a 401. `withHeaders` and `fetch({ headers })` override them |
+| `config.refreshAuth` | `(fetcher) => void \| Promise<void>` | Called on 401 — the request is then retried with fresh `headers`. It receives a fetcher for the same API that has neither the `headers` nor these hooks: call the refresh endpoint with it, never with the main fetcher, whose request would wait for the refresh it is part of. Concurrent 401 responses share a single call when they come from the same fetcher, from its clones or from fetchers built with the same `config` object; when one fetcher serves several identities, the requests are grouped by their `Authorization` and `Cookie` headers. A 401 received after these credentials changed is retried without a new call. If it rejects, the request is not retried and the reason is the `cause` of the `ApiError` |
+| `config.onUnauthorized` | `() => void \| Promise<void>` | Called on a 401 that remains after the retry, immediately if there is no `refreshAuth`, or once for the requests of a refresh that the API refuses: `refreshAuth` rejects with a 4xx `ApiError` other than 408 and 429, which a hook doing its own requests reports with `throw new ApiError(401, body)`. A refresh that fails for another reason, such as a network error, does not call it |
+| `config.*` | `RequestInit` | Any other `fetch` option (`credentials`, `cache`, `mode`, `redirect`…) applies to every request; `fetch(options)` overrides it. |
 
 Returns a `Fetcher`: `{ get, post, patch, put, delete, clone }`.
 
@@ -299,7 +307,7 @@ const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 | `.withBody(body)` | Pre-configures the body — returns a builder where `.fetch()` takes no body argument |
 | `.withHeaders(headers)` | Merges custom headers (chainable after `.withBody()`) |
 
-The body is sent as JSON. A `FormData`, `Blob`, `URLSearchParams`, binary buffer or `ReadableStream` is sent as it is. A stream cannot be sent twice: after a 401, the authentication is refreshed but the request is not retried and rejects with the 401.
+The body is sent as JSON. A `FormData`, `Blob`, `URLSearchParams`, binary buffer or `ReadableStream` is sent as it is. A stream cannot be sent twice: after a 401, the authentication is refreshed but the request is not retried and rejects with the 401. In a browser, prefer a `Blob` or a `File`: Chromium only sends a stream over HTTP/2, and Firefox and Safari do not send one at all.
 
 ### `AbortSignal`
 
@@ -307,8 +315,8 @@ All `.fetch()` methods accept a standard `RequestInit` `signal` option:
 
 ```ts
 const controller = new AbortController();
-const result = await api.get<User>("/users/1").fetch({ signal: controller.signal });
-controller.abort();
+const pending = api.get<User>("/users/1").fetch({ signal: controller.signal });
+controller.abort(); // `pending` rejects with an AbortError
 ```
 
 ### `delete(url)`
@@ -324,18 +332,22 @@ controller.abort();
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `pagination` | `boolean` | Enables or disables pagination. Ignored unless the API allows it (`pagination_client_enabled`) |
+| `pagination` | `boolean` | Enables or disables pagination. Ignored unless the API allows it (`pagination_client_enabled`); a resource with `strictQueryParameterValidation` answers 400 instead |
 | `pageIndex` | `number` | 0-based page index |
-| `pageSize` | `number` | Items per page. Ignored unless the API allows it (`pagination_client_items_per_page`) |
+| `pageSize` | `number` | Items per page. Ignored unless the API allows it (`pagination_client_items_per_page`); a resource with `strictQueryParameterValidation` answers 400 instead |
 | `sortBy` | `{ id: PropertyPath, desc: boolean }[]` | Sort fields (type-safe) |
-| `filters` | `{ id: PropertyPath \| string, value: ... }[]` | Filters: property paths are suggested, any other filter name (`exists`, a custom one) is accepted. A date goes in a record, as the date filter of API Platform expects: `{ after: date }`, `{ before: date }`; it is sent as an ISO string |
-| `properties` | `PropertyPath[]` | Partial response selection |
+| `filters` | `{ id: PropertyPath \| string, value: ... }[]` | Filters: property paths are suggested, any other filter name (`exists`, a custom one) is accepted. A date goes in a record, as the date filter of API Platform expects: `{ after: date }`, `{ before: date }`; it is sent as an ISO string, and a bound that is `null` or `undefined` is left out |
+| `properties` | `PropertyPath[]` | Partial response selection. Ignored by a resource that does not declare the property filter; a resource with `strictQueryParameterValidation` answers 400 instead |
 
 Only the options that are set are sent; the API defaults apply to the others.
 
-Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, pass `"partial"` as the fourth type argument: `entityServiceBuilder<LogIri, LogBody, Log, "partial">(api, "/logs")`.
+Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, the fourth type argument describes the resource: `{ pagination: "partial" }` types `getAll()` as a `PartialCollection`, and `{ output: false }` types `create`, `update`, `replace` and `upsert` as resolving with `null`, for a resource whose writes return no content.
 
-`properties` narrows the type of the response, and the way a relation is declared tells how the API serializes it:
+```ts
+const logs = entityServiceBuilder<LogIri, LogBody, Log, { pagination: "partial" }>(api, "/logs");
+```
+
+`properties` narrows the type of the response, whether it is typed as an `Item`, a `Collection`, a plain object or an array of them, and the way a relation is declared tells how the API serializes it:
 
 | Declaration | Meaning | Type once selected |
 |-------------|---------|--------------------|
@@ -343,7 +355,9 @@ Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` whe
 | `company: Company` | Always embedded, by the serialization groups of the API | `Company` with `company`, the selected properties with `company.name` |
 | `company: Company \| CompanyIri` | An IRI, embedded only when one of its properties is selected | `CompanyIri` with `company`, the embedded item with `company.name` |
 
-A route that serializes a resource in another way is typed with its own model. Without `properties`, the response keeps the type it was given. API Platform leaves out a property whose value is `null`: declare such a property as optional (`company?: Company | CompanyIri`).
+`Item<T, I>` is a resource read on its own, with its `@context`; an embedded relation has none, and `Embedded<T, I>` declares it that way. A relation that leads back to a resource already being read, such as `company.employees` when it contains the user that was requested, comes as its IRI: it is typed as the embedded item or the IRI, when the response is typed as an `Item` or a `Collection`. Two cases are not covered by the types: a resource that refers to itself, such as a user who is their own manager, also comes as its IRI, and relations that serialization groups embed in both directions come as IRIs even without `properties`.
+
+A route that serializes a resource in another way is typed with its own model. Without `properties`, the response keeps the type it was given. API Platform leaves out a property whose value is `null`: declare such a property as optional (`company?: Company | CompanyIri`). A nested object left with no property is written as an empty array.
 
 ---
 

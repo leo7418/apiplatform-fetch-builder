@@ -17,12 +17,14 @@ type AnyGetOptions = {
 	filters?: {
 		id: string;
 		value:
-			| Date
 			| string
 			| number
 			| boolean
 			| (string | number)[]
-			| Record<string | number, string | number | boolean | Date>;
+			| Record<
+					string | number,
+					string | number | boolean | Date | null | undefined
+			  >;
 	}[];
 	properties?: string[];
 };
@@ -32,7 +34,11 @@ export type GetOptions<
 	P extends PropertyPath<Out>[] | undefined,
 > = {
 	sortBy?: {
-		id: [PropertyPath<Out>] extends [never] ? string : PropertyPath<Out>;
+		id: [PropertyPath<Out>] extends [never]
+			? string
+			: Out extends { "@type": string }
+				? PropertyPath<Out>
+				: PropertyPath<Out> | (string & {});
 		desc: boolean;
 	}[];
 	filters?: {
@@ -43,7 +49,10 @@ export type GetOptions<
 			| number
 			| boolean
 			| (string | number)[]
-			| Record<string | number, string | number | boolean | Date>;
+			| Record<
+					string | number,
+					string | number | boolean | Date | null | undefined
+			  >;
 	}[];
 	properties?: P;
 } & (
@@ -64,7 +73,7 @@ export type BuilderConfig = Omit<RequestInit, "method" | "body" | "headers"> & {
 	originAliases?: string[];
 	/** Headers sent with every request; a function is called before each request. */
 	headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
-	/** Called on a 401 response with a fetcher that has neither the headers nor the hooks; the request is then retried once. */
+	/** Called on a 401 response with a fetcher that has neither the headers nor the hooks; the request is then retried. */
 	refreshAuth?: (fetcher: Fetcher) => void | Promise<void>;
 	/** Called when the response is still a 401 after the retry, when the API refuses the refresh, or when there is no `refreshAuth`. */
 	onUnauthorized?: () => void | Promise<void>;
@@ -120,7 +129,14 @@ export type Fetcher = {
 	clone: (overrides?: Partial<BuilderConfig>) => Fetcher;
 };
 
-type RefreshState = { pending?: Promise<{ cause: unknown } | undefined> };
+type RefreshFailure = {
+	cause: unknown;
+	notified: Set<NonNullable<BuilderConfig["onUnauthorized"]>>;
+};
+
+type RefreshState = Map<string, Promise<RefreshFailure | undefined>>;
+
+const refreshStates = new WeakMap<BuilderConfig, Map<string, RefreshState>>();
 
 const assertSafeKey = (key: string, context: string) => {
 	if (!/^[\w.-]+$/.test(key)) {
@@ -138,6 +154,30 @@ const mergeHeaders = (...sources: (HeadersInit | undefined)[]): Headers => {
 
 const resolveHeaders = async (headers: BuilderConfig["headers"]) =>
 	typeof headers === "function" ? headers() : headers;
+
+const copyHeaders = (headers?: HeadersInit): HeadersInit | undefined =>
+	headers && Symbol.iterator in headers
+		? Array.from(
+				headers as Iterable<[string, string]>,
+				(header): [string, string] => [...header],
+			)
+		: headers && { ...headers };
+
+const unlessAborted = <T>(promise: Promise<T>, signal?: AbortSignal | null) =>
+	new Promise<T>((resolve, reject) => {
+		const abort = () => reject(signal?.reason);
+		if (signal?.aborted) {
+			abort();
+			return;
+		}
+		signal?.addEventListener("abort", abort, { once: true });
+		promise
+			.then(resolve, reject)
+			.finally(() => signal?.removeEventListener("abort", abort));
+	});
+
+const credentialsOf = (headers: Headers) =>
+	`${headers.get("Authorization")}\n${headers.get("Cookie")}`;
 
 const isStream = (body: unknown): body is ReadableStream =>
 	typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
@@ -185,17 +225,18 @@ const buildGetOptions = ({
 
 	filters.forEach(({ id, value }) => {
 		assertSafeKey(id, "filter");
-		if (value instanceof Date) {
-			searchParams.append(id, value.toISOString());
-		} else if (Array.isArray(value)) {
+		if (Array.isArray(value)) {
 			value.forEach((subValue) =>
 				searchParams.append(`${id}[]`, subValue.toString()),
 			);
 		} else if (isObject(value)) {
+			if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+				throw new TypeError(`Unsupported filter value: "${id}"`);
+			}
 			Object.keys(value).forEach((subId) => {
 				assertSafeKey(subId, "filter sub-key");
 				const subValue = value[subId];
-				if (subValue !== null) {
+				if (subValue != null) {
 					searchParams.append(
 						`${id}[${subId}]`,
 						subValue instanceof Date
@@ -227,7 +268,7 @@ const buildGetOptions = ({
 };
 
 const createFetcher = (
-	entrypoint: string,
+	resolveBase: () => URL,
 	config: BuilderConfig,
 	refreshState: RefreshState,
 ): Fetcher => {
@@ -241,7 +282,7 @@ const createFetcher = (
 	const aliasOrigins = originAliases.map((alias) => new URL(alias).origin);
 
 	const buildURL = (path: string, searchParams?: URLSearchParams) => {
-		const base = new URL(entrypoint);
+		const base = resolveBase();
 		const basePath = base.pathname.replace(/\/+$/, "");
 		const target = new URL(path, `${base.origin}/`);
 		const isAlias = aliasOrigins.includes(target.origin);
@@ -262,39 +303,47 @@ const createFetcher = (
 		return url.toString();
 	};
 
-	const doFetch = async <In = never>(
+	const buildHeaders = async <In = never>(
+		method: FetchMethod,
+		{ body, headers }: FetchOptions<In>,
+	) =>
+		mergeHeaders(
+			{
+				...(body == null || isRawBody(body)
+					? {}
+					: {
+							"Content-Type":
+								method !== "PATCH"
+									? "application/ld+json"
+									: "application/merge-patch+json",
+						}),
+				Accept: "application/ld+json",
+			},
+			await resolveHeaders(commonHeaders),
+			headers,
+		);
+
+	const doFetch = <In = never>(
 		url: string,
 		method: FetchMethod,
-		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
+		options: FetchOptions<In> & { searchParams?: URLSearchParams },
+		headers: Headers,
 	): Promise<globalThis.Response> => {
-		const { body, headers, searchParams, ...restOptions } = options;
+		const { body, searchParams, ...restOptions } = options;
 
 		return fetch(buildURL(url, searchParams), {
 			...init,
+			...(isStream(body) && { duplex: "half" }),
+			...restOptions,
+			redirect: restOptions.redirect ?? init.redirect ?? "manual",
 			method,
-			headers: mergeHeaders(
-				{
-					...(body == null || isRawBody(body)
-						? {}
-						: {
-								"Content-Type":
-									method !== "PATCH"
-										? "application/ld+json"
-										: "application/merge-patch+json",
-							}),
-					Accept: "application/ld+json",
-				},
-				await resolveHeaders(commonHeaders),
-				headers,
-			),
+			headers,
 			body:
 				body == null
 					? undefined
 					: isRawBody(body)
 						? body
 						: JSON.stringify(body),
-			...(isStream(body) && { duplex: "half" }),
-			...restOptions,
 		});
 	};
 
@@ -303,45 +352,114 @@ const createFetcher = (
 		method: FetchMethod,
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
 	): Promise<globalThis.Response> => {
-		let response = await doFetch<In>(url, method, options);
-		let refreshFailure: { cause: unknown } | undefined;
+		const unauthorizedBodies = new Map<globalThis.Response, string>();
+		const attempt = async (given?: Headers) => {
+			const headers = given ?? (await buildHeaders(method, options));
+			return {
+				credentials: credentialsOf(headers),
+				response: await doFetch<In>(url, method, options, headers),
+			};
+		};
+		const retry = async (headers?: Headers) => {
+			if (!unauthorizedBodies.has(response)) {
+				unauthorizedBodies.set(response, await response.text().catch(() => ""));
+			}
+			if (isStream(options.body)) {
+				throw new ApiError(
+					401,
+					parseErrorBody(unauthorizedBodies.get(response)!),
+					{ headers: response.headers },
+				);
+			}
+			({ credentials, response } = await attempt(headers));
+		};
+		let { credentials, response } = await attempt();
+		let refreshFailure: RefreshFailure | undefined;
 
 		if (response.status === 401 && refreshAuth) {
-			refreshState.pending ??= Promise.resolve()
-				.then(() =>
-					refreshAuth(
-						createFetcher(entrypoint, { ...init, originAliases }, {}),
-					),
-				)
-				.then(
-					() => undefined,
-					(cause: unknown) => ({ cause }),
-				)
-				.finally(() => {
-					refreshState.pending = undefined;
-				});
-			refreshFailure = await refreshState.pending;
-
-			if (!refreshFailure && isStream(options.body)) {
-				throw new ApiError(401, parseErrorBody(await response.text()));
+			const current = await buildHeaders(method, options);
+			const changed = credentialsOf(current) !== credentials;
+			const stable =
+				!changed ||
+				credentialsOf(await buildHeaders(method, options)) ===
+					credentialsOf(current);
+			if (changed && stable) {
+				await retry(current);
 			}
-			if (!refreshFailure) {
-				response = await doFetch<In>(url, method, options);
+
+			if (response.status === 401) {
+				const key = stable ? credentials : "";
+				let refreshing = refreshState.get(key);
+				if (!refreshing) {
+					refreshing = Promise.resolve()
+						.then(() =>
+							refreshAuth(
+								createFetcher(
+									resolveBase,
+									{ ...init, originAliases },
+									new Map(),
+								),
+							),
+						)
+						.then(
+							() => undefined,
+							(cause: unknown): RefreshFailure => ({
+								cause,
+								notified: new Set(),
+							}),
+						)
+						.finally(() => refreshState.delete(key));
+					refreshState.set(key, refreshing);
+				}
+				refreshFailure = await unlessAborted(
+					refreshing,
+					options.signal ?? init.signal,
+				);
+
+				if (!refreshFailure) {
+					await retry();
+				}
 			}
 		}
 
+		if (
+			response.type === "opaqueredirect" ||
+			[301, 302, 303, 307, 308].includes(response.status)
+		) {
+			throw new ApiError(
+				response.status,
+				parseErrorBody(await response.text()),
+				{ message: "Redirect not followed", headers: response.headers },
+			);
+		}
+
 		if (!response.ok) {
-			const cause = refreshFailure?.cause;
-			const refused =
-				cause instanceof ApiError && cause.status >= 400 && cause.status < 500;
-			if (response.status === 401 && (!refreshFailure || refused)) {
-				await onUnauthorized?.();
+			if (response.status === 401 && onUnauthorized) {
+				const cause = refreshFailure?.cause;
+				const refused =
+					cause instanceof ApiError &&
+					cause.status >= 400 &&
+					cause.status < 500 &&
+					cause.status !== 408 &&
+					cause.status !== 429;
+				if (
+					!refreshFailure ||
+					(refused && !refreshFailure.notified.has(onUnauthorized))
+				) {
+					refreshFailure?.notified.add(onUnauthorized);
+					await onUnauthorized();
+				}
 			}
 
 			throw new ApiError(
 				response.status,
-				parseErrorBody(await response.text()),
-				refreshFailure,
+				parseErrorBody(
+					unauthorizedBodies.get(response) ?? (await response.text()),
+				),
+				{
+					headers: response.headers,
+					...(refreshFailure && { cause: refreshFailure.cause }),
+				},
 			);
 		}
 
@@ -354,9 +472,9 @@ const createFetcher = (
 		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
 	): Promise<Out> => {
 		const response = await send<In>(url, method, options);
-		const text = method === "DELETE" ? "" : await response.text();
+		const text = await response.text();
 
-		if (text === "" && method !== "GET") {
+		if (method === "DELETE" || (text === "" && method !== "GET")) {
 			return null as Out;
 		}
 		try {
@@ -364,11 +482,12 @@ const createFetcher = (
 		} catch {
 			throw new ApiError(response.status, text, {
 				message: "Response is not JSON",
+				headers: response.headers,
 			});
 		}
 	};
 
-	const get = <Out extends object>(
+	const makeGetBuilder = <Out extends object>(
 		url: string,
 		...headers: (HeadersInit | undefined)[]
 	): GetBuilder<Out> => ({
@@ -382,7 +501,8 @@ const createFetcher = (
 				...options,
 				headers: mergeHeaders(...headers, options?.headers),
 			}),
-		withHeaders: (h: HeadersInit) => get<Out>(url, ...headers, h),
+		withHeaders: (h: HeadersInit) =>
+			makeGetBuilder<Out>(url, ...headers, copyHeaders(h)),
 		withOptions: <P extends PropertyPath<Out>[]>(
 			getOptions: GetOptions<Out, P>,
 		) => ({
@@ -399,7 +519,9 @@ const createFetcher = (
 					searchParams: buildGetOptions(getOptions as AnyGetOptions),
 				}),
 			withHeaders: (h: HeadersInit) =>
-				get<Out>(url, ...headers, h).withOptions(getOptions),
+				makeGetBuilder<Out>(url, ...headers, copyHeaders(h)).withOptions(
+					getOptions,
+				),
 		}),
 	});
 
@@ -421,7 +543,7 @@ const createFetcher = (
 				body,
 			}),
 		withHeaders: (h: HeadersInit) =>
-			makeMutationBuilder<Out, In>(method, url, ...headers, h),
+			makeMutationBuilder<Out, In>(method, url, ...headers, copyHeaders(h)),
 		withBody: (b: In) => ({
 			fetch: async (options?: FetchOptions<In>) =>
 				request<Out, In>(url, method, {
@@ -436,26 +558,34 @@ const createFetcher = (
 					body: b,
 				}),
 			withHeaders: (h: HeadersInit) =>
-				makeMutationBuilder<Out, In>(method, url, ...headers, h).withBody(b),
+				makeMutationBuilder<Out, In>(
+					method,
+					url,
+					...headers,
+					copyHeaders(h),
+				).withBody(b),
 		}),
 	});
+
+	const get = <Out extends object>(url: string, headers?: HeadersInit) =>
+		makeGetBuilder<Out>(url, copyHeaders(headers));
 
 	const post = <Out extends object | null, In>(
 		url: string,
 		headers?: HeadersInit,
-	) => makeMutationBuilder<Out, In>("POST", url, headers);
+	) => makeMutationBuilder<Out, In>("POST", url, copyHeaders(headers));
 
 	const patch = <Out extends object | null, In>(
 		url: string,
 		headers?: HeadersInit,
-	) => makeMutationBuilder<Out, In>("PATCH", url, headers);
+	) => makeMutationBuilder<Out, In>("PATCH", url, copyHeaders(headers));
 
 	const put = <Out extends object | null, In>(
 		url: string,
 		headers?: HeadersInit,
-	) => makeMutationBuilder<Out, In>("PUT", url, headers);
+	) => makeMutationBuilder<Out, In>("PUT", url, copyHeaders(headers));
 
-	const del = (
+	const makeDeleteBuilder = (
 		url: string,
 		...headers: (HeadersInit | undefined)[]
 	): DeleteBuilder => ({
@@ -464,12 +594,16 @@ const createFetcher = (
 				...options,
 				headers: mergeHeaders(...headers, options?.headers),
 			}),
-		withHeaders: (h: HeadersInit) => del(url, ...headers, h),
+		withHeaders: (h: HeadersInit) =>
+			makeDeleteBuilder(url, ...headers, copyHeaders(h)),
 	});
+
+	const del = (url: string, headers?: HeadersInit) =>
+		makeDeleteBuilder(url, copyHeaders(headers));
 
 	const clone = (overrides: Partial<BuilderConfig> = {}): Fetcher =>
 		createFetcher(
-			entrypoint,
+			resolveBase,
 			{
 				...config,
 				...overrides,
@@ -479,7 +613,7 @@ const createFetcher = (
 						await resolveHeaders(overrides.headers),
 					),
 			},
-			overrides.refreshAuth ? {} : refreshState,
+			overrides.refreshAuth ? new Map() : refreshState,
 		);
 
 	return { get, post, patch, put, delete: del, clone };
@@ -488,6 +622,17 @@ const createFetcher = (
 const fetchBuilder = (
 	entrypoint: string,
 	config: BuilderConfig = {},
-): Fetcher => createFetcher(entrypoint, config, {});
+): Fetcher => {
+	let base: URL | undefined;
+	const states = refreshStates.get(config) ?? new Map<string, RefreshState>();
+	const state: RefreshState = states.get(entrypoint) ?? new Map();
+	refreshStates.set(config, states.set(entrypoint, state));
+
+	return createFetcher(
+		() => (base ??= new URL(entrypoint, globalThis.location?.href)),
+		config,
+		state,
+	);
+};
 
 export default fetchBuilder;

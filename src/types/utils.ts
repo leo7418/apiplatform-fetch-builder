@@ -1,3 +1,5 @@
+import type { Leaf } from "./internal.ts";
+
 export type ID = number | string;
 
 export type Primitive =
@@ -33,9 +35,11 @@ export type Split<
 	? [First, ...Split<Rest, D>]
 	: [S];
 
-export type Simplify<T> = T extends object
-	? { [K in keyof T]: Simplify<T[K]> }
-	: T;
+export type Simplify<T> = T extends Leaf
+	? T
+	: T extends object
+		? { [K in keyof T]: Simplify<T[K]> }
+		: T;
 
 export type IsEmptyObject<T> = keyof T extends never ? true : false;
 

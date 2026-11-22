@@ -16,6 +16,7 @@ export type {
 	GetOptions,
 } from "./lib/fetch-builder.ts";
 export type {
+	EntityServiceOptions,
 	GetAllPagesProgress,
 	OnProgress,
 } from "./lib/entity-service-builder.ts";
