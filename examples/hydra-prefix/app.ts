@@ -14,7 +14,7 @@ const fetcher = fetchBuilder("https://your-api.com");
 
 const books = await fetcher
 	.get<Collection<Book, Iri<"books">>>("/books")
-	.withOptions({ properties: ["title"] })
+	.withQuery({ properties: ["title"] })
 	.fetch();
 
 console.log(books["hydra:member"]);

@@ -128,6 +128,22 @@ describe("fetch-builder tests methods", () => {
 		assert.equal(response.bodyUsed, true);
 	});
 
+	test("DELETE: should give the response with fetchRaw", async () => {
+		global.fetch = async (input, init) => {
+			assert.equal(input, "https://example.com/test/1");
+			assert.equal(init?.method, "DELETE");
+			assert.equal(new Headers(init?.headers).get("X-Reason"), "cleanup");
+			return new Response(null, { status: 204 });
+		};
+
+		const response = await fetcher
+			.delete("/test/1")
+			.withHeaders({ "X-Reason": "cleanup" })
+			.fetchRaw();
+
+		assert.equal(response.status, 204);
+	});
+
 	test("DELETE: should return null", async () => {
 		const spy = async (input: RequestInfo | URL, init?: RequestInit) => {
 			assert.equal(init?.method, "DELETE");
@@ -246,8 +262,8 @@ describe("fetch-builder isHydraError", () => {
 	});
 });
 
-describe("fetch-builder tests GET options", () => {
-	test("GET with options: should add the correct searchParams", async () => {
+describe("fetch-builder tests GET query", () => {
+	test("GET with a query: should add the correct searchParams", async () => {
 		const spy = async (input: RequestInfo | URL) => {
 			assert.match(
 				input.toString(),
@@ -263,7 +279,7 @@ describe("fetch-builder tests GET options", () => {
 
 		const result = await fetcher
 			.get<{ items: object[] }>("/items")
-			.withOptions({
+			.withQuery({
 				pagination: true,
 				pageIndex: 1,
 				pageSize: 20,
@@ -290,7 +306,7 @@ describe("fetch-builder tests GET options", () => {
 
 		const result = await fetcher
 			.get<{ items: object[] }>("/items")
-			.withOptions({
+			.withQuery({
 				pagination: false,
 				filters: [{ id: "status", value: "active" }],
 			})
@@ -317,13 +333,49 @@ describe("fetch-builder tests GET options", () => {
 			.get<Collection<{ name: string; age: number }, `/items/${number}`>>(
 				"/items",
 			)
-			.withOptions({
+			.withQuery({
 				pagination: false,
 				properties: ["name", "age"],
 			})
 			.fetch();
 
 		assert.deepEqual(result, { items: [] });
+	});
+});
+
+describe("fetch-builder builders", () => {
+	test("a builder should only carry the methods of its request", () => {
+		const read = fetcher.get<object>("/test");
+		const write = fetcher.post<object, object>("/test");
+		const methods = (builder: object) => Object.keys(builder).sort();
+
+		assert.deepEqual(methods(read), [
+			"fetch",
+			"fetchRaw",
+			"withHeaders",
+			"withQuery",
+		]);
+		assert.deepEqual(methods(read.withQuery({})), [
+			"fetch",
+			"fetchRaw",
+			"withHeaders",
+		]);
+		assert.deepEqual(methods(write), [
+			"fetch",
+			"fetchRaw",
+			"withBody",
+			"withHeaders",
+		]);
+		assert.deepEqual(methods(write.withBody({})), [
+			"fetch",
+			"fetchRaw",
+			"withHeaders",
+		]);
+		assert.deepEqual(methods(fetcher.delete("/test")), [
+			"fetch",
+			"fetchRaw",
+			"withHeaders",
+		]);
 	});
 });
 
@@ -412,7 +464,6 @@ describe("fetch-builder header sources", () => {
 
 		const fromHeaders = fetcher.get<object>("/test").withHeaders(headers);
 		const fromRecord = fetcher.get<object>("/test").withHeaders(record);
-		const fromArgument = fetcher.get<object>("/test", record);
 		const fromMap = fetcher
 			.get<object>("/test")
 			.withHeaders(new Map([["X-Version", "1"]]) as unknown as HeadersInit);
@@ -423,11 +474,10 @@ describe("fetch-builder header sources", () => {
 		pairs[0][1] = "2";
 		await fromHeaders.fetch();
 		await fromRecord.fetch();
-		await fromArgument.fetch();
 		await fromMap.fetch();
 		await fromPairs.fetch();
 
-		assert.deepEqual(sent, ["1", "1", "1", "1", "1"]);
+		assert.deepEqual(sent, ["1", "1", "1", "1"]);
 		await assert.rejects(
 			() =>
 				fetcher
@@ -482,6 +532,101 @@ describe("fetch-builder withBody", () => {
 			.withBody(body)
 			.withHeaders({ "X-Tenant": "acme" })
 			.fetch();
+	});
+
+	test("withBody: should keep the options given to fetch", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
+			assert.deepEqual(JSON.parse(init?.body as string), { foo: "bar" });
+			return new Response(JSON.stringify({ created: true }), { status: 201 });
+		};
+
+		await fetcher
+			.post<{ created: boolean }, { foo: string }>("/create")
+			.withBody({ foo: "bar" })
+			.fetch({ headers: { "X-Tenant": "acme" } });
+	});
+
+	test("withBody: should send no body when it is given undefined", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(init?.body ?? null, null);
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
+			return new Response(JSON.stringify({ created: true }), { status: 201 });
+		};
+
+		await fetcher
+			.post<{ created: boolean }, undefined>("/create")
+			.withBody(undefined)
+			.fetch({ headers: { "X-Tenant": "acme" } });
+	});
+
+	test("fetch: should let its headers win and ignore a body among its options", async () => {
+		const options = { headers: { "X-Tenant": "globex" }, body: "ignored" };
+		global.fetch = async (_input, init) => {
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "globex");
+			assert.deepEqual(JSON.parse(init?.body as string), { foo: "bar" });
+			return new Response(JSON.stringify({ created: true }), { status: 201 });
+		};
+
+		await fetcher
+			.post<{ created: boolean }, { foo: string }>("/create")
+			.withHeaders({ "X-Tenant": "acme" })
+			.fetch({ foo: "bar" }, options);
+	});
+
+	test("withBody: should keep the headers set before it", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
+			assert.deepEqual(JSON.parse(init?.body as string), { foo: "bar" });
+			return new Response(JSON.stringify({ created: true }), { status: 201 });
+		};
+
+		await fetcher
+			.post<{ created: boolean }, { foo: string }>("/create")
+			.withHeaders({ "X-Tenant": "acme" })
+			.withBody({ foo: "bar" })
+			.fetch();
+	});
+
+	test("withQuery: should keep the headers set before it", async () => {
+		global.fetch = async (input, init) => {
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
+			assert.equal(new URL(String(input)).searchParams.get("page"), "2");
+			return new Response(JSON.stringify({ member: [] }), { status: 200 });
+		};
+
+		await fetcher
+			.get<Collection<{ name: string }>>("/users")
+			.withHeaders({ "X-Tenant": "acme" })
+			.withQuery({ pageIndex: 1 })
+			.fetch();
+	});
+
+	test("withHeaders: should leave the request as it is without headers", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(
+				new Headers(init?.headers).get("Authorization"),
+				"Bearer some-complex-token",
+			);
+			return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+		};
+
+		await fetcher.get<object>("/test").withHeaders(undefined).fetch();
+	});
+
+	test("fetchRaw: should send the body and the options of a mutation", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(init?.method, "POST");
+			assert.equal(new Headers(init?.headers).get("X-Tenant"), "acme");
+			assert.deepEqual(JSON.parse(init?.body as string), { foo: "bar" });
+			return new Response("done", { status: 200 });
+		};
+
+		const response = await fetcher
+			.post<object, { foo: string }>("/export")
+			.fetchRaw({ foo: "bar" }, { headers: { "X-Tenant": "acme" } });
+
+		assert.equal(await response.text(), "done");
 	});
 });
 
@@ -1079,7 +1224,7 @@ describe("fetch-builder security", () => {
 			() =>
 				fetcher
 					.get<{ items: object[] }>("/items")
-					.withOptions({ sortBy: [{ id: "name; DROP TABLE", desc: false }] })
+					.withQuery({ sortBy: [{ id: "name; DROP TABLE", desc: false }] })
 					.fetch(),
 			TypeError,
 		);
@@ -1090,7 +1235,7 @@ describe("fetch-builder security", () => {
 			() =>
 				fetcher
 					.get<{ items: object[] }>("/items")
-					.withOptions({ filters: [{ id: "status<script>", value: "x" }] })
+					.withQuery({ filters: [{ id: "status<script>", value: "x" }] })
 					.fetch(),
 			TypeError,
 		);
@@ -1106,7 +1251,7 @@ describe("fetch-builder security", () => {
 		await assert.doesNotReject(() =>
 			fetcher
 				.get<{ items: object[] }>("/items")
-				.withOptions({
+				.withQuery({
 					sortBy: [{ id: "employee.name", desc: false }],
 					filters: [{ id: "created-after", value: "2026-01-01" }],
 				})
@@ -1312,10 +1457,8 @@ describe("fetch-builder query string", () => {
 		};
 
 		const builder = fetcher.get<{ items: object[] }>("/items?page=2");
-		await builder
-			.withOptions({ sortBy: [{ id: "name", desc: false }] })
-			.fetch();
-		await builder.withOptions({}).fetch();
+		await builder.withQuery({ sortBy: [{ id: "name", desc: false }] }).fetch();
+		await builder.withQuery({}).fetch();
 
 		assert.deepEqual(urls, [
 			"https://example.com/items?page=2&order%5Bname%5D=ASC",
@@ -1339,7 +1482,7 @@ describe("fetch-builder fetchRaw", () => {
 
 		const response = await fetcher
 			.get<object>("/users")
-			.withOptions({ filters: [{ id: "status", value: "active" }] })
+			.withQuery({ filters: [{ id: "status", value: "active" }] })
 			.withHeaders({ Accept: "text/csv" })
 			.fetchRaw();
 
@@ -1569,6 +1712,20 @@ describe("fetch-builder originAliases", () => {
 	});
 });
 
+describe("fetch-builder array filters", () => {
+	test("should not filter on an empty array", async () => {
+		global.fetch = async (input) => {
+			assert.equal(String(input), "https://example.com/users");
+			return new Response(JSON.stringify({ member: [] }), { status: 200 });
+		};
+
+		await fetcher
+			.get<Collection<{ status: string }>>("/users")
+			.withQuery({ filters: [{ id: "status", value: [] }] })
+			.fetch();
+	});
+});
+
 describe("fetch-builder date filters", () => {
 	test("should send a date of a filter record as an ISO string", async () => {
 		const urls: string[] = [];
@@ -1579,7 +1736,7 @@ describe("fetch-builder date filters", () => {
 
 		await fetcher
 			.get<{ items: object[] }>("/items")
-			.withOptions({
+			.withQuery({
 				filters: [
 					{
 						id: "publishedAt",
@@ -1591,7 +1748,7 @@ describe("fetch-builder date filters", () => {
 
 		await fetcher
 			.get<{ items: object[] }>("/items")
-			.withOptions({
+			.withQuery({
 				filters: [
 					{ id: "publishedAt", value: { after: undefined, before: null } },
 				],
@@ -1607,7 +1764,7 @@ describe("fetch-builder date filters", () => {
 				() =>
 					fetcher
 						.get<{ items: object[] }>("/items")
-						.withOptions({
+						.withQuery({
 							filters: [{ id: "publishedAt", value: value as never }],
 						})
 						.fetch(),
@@ -1620,7 +1777,7 @@ describe("fetch-builder date filters", () => {
 	});
 });
 
-describe("fetch-builder default GET options", () => {
+describe("fetch-builder default GET query", () => {
 	test("should only send the options that are set", async () => {
 		const urls: string[] = [];
 		global.fetch = async (input) => {
@@ -1629,10 +1786,10 @@ describe("fetch-builder default GET options", () => {
 		};
 
 		const builder = fetcher.get<{ items: object[] }>("/items");
-		await builder.withOptions({ sortBy: [{ id: "name", desc: true }] }).fetch();
-		await builder.withOptions({ pageSize: 50 }).fetch();
+		await builder.withQuery({ sortBy: [{ id: "name", desc: true }] }).fetch();
+		await builder.withQuery({ pageSize: 50 }).fetch();
 		await builder
-			.withOptions({ filters: [{ id: "active", value: true }] })
+			.withQuery({ filters: [{ id: "active", value: true }] })
 			.fetch();
 
 		assert.deepEqual(urls, [

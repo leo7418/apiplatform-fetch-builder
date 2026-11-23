@@ -4,12 +4,12 @@ import assert from "node:assert/strict";
 import entityServiceBuilder from "./entity-service-builder.ts";
 import fetchBuilder from "./fetch-builder.ts";
 import type { Iri } from "../types/iri.ts";
-import type { Item } from "../types/item.ts";
+import type { Embedded, Item } from "../types/item.ts";
 import type { Collection } from "../types/collection.ts";
 
 type EntityIri = Iri<"entities">;
 type EntityBody = { name: string };
-type Entity = EntityBody & { calculatedName?: string };
+type Entity = { name: string; readonly calculatedName?: string };
 
 const entityPath = "/entities";
 
@@ -18,7 +18,7 @@ const makeService = () => {
 		headers: { Authorization: "Bearer some-complex-token" },
 		onUnauthorized: mock.fn() as () => void,
 	});
-	const entityService = entityServiceBuilder<EntityIri, EntityBody, Entity>(
+	const entityService = entityServiceBuilder<EntityIri, Entity>(
 		fetcher,
 		entityPath,
 	);
@@ -67,10 +67,11 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should send a FormData body as it is", async () => {
-		const mediaService = entityServiceBuilder<Iri<"media">, FormData, Entity>(
-			"https://example.com",
-			"/media",
-		);
+		const mediaService = entityServiceBuilder<
+			Iri<"media">,
+			Entity,
+			{ body: FormData }
+		>("https://example.com", "/media");
 		const form = new FormData();
 		form.append("file", new Blob(["abc"]), "a.txt");
 		const sent: unknown[] = [];
@@ -109,7 +110,7 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
-	test("should get an entity by id with options", async () => {
+	test("should get an entity by id with a query", async () => {
 		const { fetcher, entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
 		const response: Omit<Item<Entity, EntityIri>, "name"> = {
@@ -123,7 +124,7 @@ describe("entityServiceBuilder", () => {
 		getMocked.mock.mockImplementationOnce(
 			() =>
 				({
-					withOptions: mock.fn(() => ({
+					withQuery: mock.fn(() => ({
 						fetch: async () => response,
 					})),
 				}) as unknown as ReturnType<
@@ -132,16 +133,16 @@ describe("entityServiceBuilder", () => {
 		);
 		fetcher.get = getMocked as unknown as typeof fetcher.get;
 
-		const getOptions = { properties: ["calculatedName"] } as NonNullable<
+		const query = { properties: ["calculatedName"] } as NonNullable<
 			Parameters<typeof entityService.get>[1]
 		>;
-		const result = await entityService.get(iri, getOptions);
+		const result = await entityService.get(iri, query);
 
 		assert.strictEqual(getMocked.mock.callCount(), 1);
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], iri);
 		assert.strictEqual(
 			(
-				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+				getMocked.mock.calls[0].result!.withQuery as unknown as Mock<
 					(...args: unknown[]) => unknown
 				>
 			).mock.callCount(),
@@ -149,11 +150,11 @@ describe("entityServiceBuilder", () => {
 		);
 		assert.strictEqual(
 			(
-				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+				getMocked.mock.calls[0].result!.withQuery as unknown as Mock<
 					(...args: unknown[]) => unknown
 				>
 			).mock.calls[0].arguments[0],
-			getOptions,
+			query,
 		);
 		assert.deepStrictEqual(result, response);
 	});
@@ -186,7 +187,7 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
-	test("should get all entities with options", async () => {
+	test("should get all entities with a query", async () => {
 		const { fetcher, entityService } = makeService();
 		const response: Collection<Entity, EntityIri> = {
 			"@context": "",
@@ -206,7 +207,7 @@ describe("entityServiceBuilder", () => {
 		getMocked.mock.mockImplementationOnce(
 			() =>
 				({
-					withOptions: mock.fn(() => ({
+					withQuery: mock.fn(() => ({
 						fetch: async () => response,
 					})),
 				}) as unknown as ReturnType<
@@ -215,16 +216,16 @@ describe("entityServiceBuilder", () => {
 		);
 		fetcher.get = getMocked as unknown as typeof fetcher.get;
 
-		const getOptions = { properties: ["calculatedName"] } as NonNullable<
+		const query = { properties: ["calculatedName"] } as NonNullable<
 			Parameters<typeof entityService.get>[1]
 		>;
-		const result = await entityService.getAll(getOptions);
+		const result = await entityService.getAll(query);
 
 		assert.strictEqual(getMocked.mock.callCount(), 1);
 		assert.strictEqual(getMocked.mock.calls[0].arguments[0], entityPath);
 		assert.strictEqual(
 			(
-				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+				getMocked.mock.calls[0].result!.withQuery as unknown as Mock<
 					(...args: unknown[]) => unknown
 				>
 			).mock.callCount(),
@@ -232,11 +233,11 @@ describe("entityServiceBuilder", () => {
 		);
 		assert.strictEqual(
 			(
-				getMocked.mock.calls[0].result!.withOptions as unknown as Mock<
+				getMocked.mock.calls[0].result!.withQuery as unknown as Mock<
 					(...args: unknown[]) => unknown
 				>
 			).mock.calls[0].arguments[0],
-			getOptions,
+			query,
 		);
 		assert.deepStrictEqual(result, response);
 	});
@@ -317,6 +318,221 @@ describe("entityServiceBuilder", () => {
 		assert.deepStrictEqual(result, response);
 	});
 
+	test("should send an embedded resource as its IRI", async () => {
+		type CompanyIri = Iri<"companies">;
+		type Company = Embedded<{ name: string }, CompanyIri>;
+		type Article = {
+			title: string;
+			company: Company | CompanyIri;
+			reviewers: (Company | CompanyIri)[];
+			seo: { "@id": string; "@type": string; title: string; author: Company };
+		};
+		const articles = entityServiceBuilder<Iri<"articles">, Article>(
+			"https://example.com",
+			"/articles",
+		);
+		const company: Company = {
+			"@id": "/companies/1",
+			"@type": "Company",
+			name: "Acme",
+		};
+		const seo = {
+			"@id": "/.well-known/genid/abc",
+			"@type": "Seo",
+			title: "Hello",
+			author: company,
+		};
+		const sent: unknown[] = [];
+		global.fetch = async (_input, init) => {
+			sent.push(JSON.parse(init?.body as string));
+			return new Response(JSON.stringify({}), { status: 200 });
+		};
+
+		await articles.create({ title: "Hello", company });
+		await articles.update(1, {
+			company,
+			reviewers: [company, "/companies/2"],
+			seo,
+		});
+
+		assert.deepEqual(sent, [
+			{ title: "Hello", company: "/companies/1" },
+			{
+				company: "/companies/1",
+				reviewers: ["/companies/1", "/companies/2"],
+				seo: { title: "Hello", author: "/companies/1" },
+			},
+		]);
+	});
+
+	test("should send an item back as it was read", async () => {
+		type CompanyIri = Iri<"companies">;
+		type Company = Embedded<{ name: string }, CompanyIri>;
+		type Article = {
+			readonly id: number;
+			title: string;
+			company: Company | CompanyIri;
+			readonly slug: string;
+		};
+		const articles = entityServiceBuilder<Iri<"articles">, Article>(
+			"https://example.com",
+			"/articles",
+		);
+		const article: Item<Article, Iri<"articles">> = {
+			"@context": "/contexts/Article",
+			"@id": "/articles/7",
+			"@type": "Article",
+			id: 7,
+			title: "Hello",
+			company: { "@id": "/companies/1", "@type": "Company", name: "Acme" },
+			slug: "hello",
+		};
+		const sent: unknown[] = [];
+		global.fetch = async (input, init) => {
+			sent.push([
+				init?.method,
+				String(input),
+				JSON.parse(init?.body as string),
+			]);
+			return new Response(JSON.stringify(article), { status: 200 });
+		};
+		const body = { title: "Hello", company: "/companies/1", slug: "hello" };
+
+		await articles.update(article);
+		await articles.replace(article);
+		await articles.upsert(article);
+		await articles.create({ ...article, title: "Copy" });
+
+		assert.deepEqual(sent, [
+			["PATCH", "https://example.com/articles/7", body],
+			["PUT", "https://example.com/articles/7", body],
+			["PATCH", "https://example.com/articles/7", body],
+			["POST", "https://example.com/articles", { ...body, title: "Copy" }],
+		]);
+	});
+
+	test("should only replace an embedded resource of the API by its IRI", async () => {
+		class Money {
+			amount = 5;
+		}
+		type Loose = Record<string, unknown>;
+		type Article = {
+			schema: Loose;
+			meta: Loose;
+			draft: Loose;
+			node: Loose;
+			prefixed: Loose;
+			price: unknown;
+			publishedAt: unknown;
+			matrix: unknown[][];
+			company: Loose;
+			partner: Loose;
+			author: Loose;
+			person: Loose;
+			absolute: Loose;
+			vocabulary: Loose;
+		};
+		const articles = entityServiceBuilder<Iri<"articles">, Article>(
+			"https://example.com",
+			"/articles",
+		);
+		const schema = {
+			"@context": "https://schema.org",
+			"@id": "https://example.org/people/1",
+			"@type": "Person",
+			worksFor: { "@id": "https://example.org/org/2", name: "X" },
+			"@graph": [{ "@id": "/.well-known/genid/a", "@type": "Thing" }],
+		};
+		const person = {
+			"@context": "https://json-ld.org/contexts/person.jsonld",
+			"@id": "http://dbpedia.org/resource/John_Lennon",
+			name: "John Lennon",
+		};
+		const vocabulary = { "@context": "/contexts/v1/terms", "@id": "/terms/1" };
+		let sent: unknown;
+		global.fetch = async (_input, init) => {
+			sent = JSON.parse(init?.body as string);
+			return new Response(JSON.stringify({}), { status: 200 });
+		};
+
+		await articles.update(1, {
+			schema,
+			meta: { "@id": "urn:isbn:1", note: "n" },
+			draft: { "@id": "", name: "x" },
+			node: { "@id": "_:b0", "@type": "Seo", title: "t" },
+			prefixed: { "@id": "/api/.well-known/genid/abc", "@type": "Seo" },
+			price: new Money(),
+			publishedAt: new Date(0),
+			matrix: [[{ "@id": "/companies/1" }], [1]],
+			company: Object.assign(Object.create(null), { "@id": "/companies/2" }),
+			partner: { "@id": "https://example.com/companies/3", name: "Acme" },
+			author: { "@context": "/contexts/User", "@id": "/users/2", name: "A" },
+			person,
+			absolute: {
+				"@context": "https://example.com/contexts/User",
+				"@id": "https://example.com/users/3",
+			},
+			vocabulary,
+		});
+
+		assert.deepEqual(sent, {
+			schema,
+			meta: { "@id": "urn:isbn:1", note: "n" },
+			draft: { "@id": "", name: "x" },
+			node: { title: "t" },
+			prefixed: {},
+			price: { amount: 5 },
+			publishedAt: "1970-01-01T00:00:00.000Z",
+			matrix: [["/companies/1"], [1]],
+			company: "/companies/2",
+			partner: "https://example.com/companies/3",
+			author: "/users/2",
+			person,
+			absolute: "https://example.com/users/3",
+			vocabulary,
+		});
+	});
+
+	test("should treat an array body and a body without prototype like any other", async () => {
+		type Tag = { id: string; name: string };
+		const tags = entityServiceBuilder<
+			Iri<"tags", string>,
+			Tag,
+			{ body: { name: string }[] | { name: string } }
+		>("https://example.com", "/tags");
+		const copied = [
+			{ "@id": "/tags/a%20b", "@type": "Tag", id: "a b", name: "a" },
+		];
+		const bare: { name: string } = Object.assign(Object.create(null), {
+			"@type": "Tag",
+			id: "new",
+			name: "b",
+		});
+		const sent: unknown[] = [];
+		global.fetch = async (_input, init) => {
+			sent.push(JSON.parse(init?.body as string));
+			return new Response(JSON.stringify({}), { status: 201 });
+		};
+
+		const other = { "@id": "/tags/17", id: "7", name: "c" };
+		const encoded = { "@id": "/tags/a@b.c", id: "a@b.c", name: "d" };
+		const cyclic: { name: string; self?: unknown } = { name: "e" };
+		cyclic.self = cyclic;
+
+		await tags.create(copied);
+		await tags.create(bare);
+		await tags.create(other);
+		await tags.create(encoded);
+		await assert.rejects(tags.create(cyclic));
+
+		assert.deepEqual(sent, [
+			[{ name: "a" }],
+			{ id: "new", name: "b" },
+			{ id: "7", name: "c" },
+			{ name: "d" },
+		]);
+	});
+
 	test("should replace an entity by Iri", async () => {
 		const { entityService } = makeService();
 		const iri: EntityIri = "/entities/1";
@@ -372,6 +588,27 @@ describe("entityServiceBuilder", () => {
 		};
 
 		const result = await entityService.replace(bodyWithId);
+
+		assert.deepStrictEqual(result, response);
+	});
+
+	test("should replace an entity by body with id", async () => {
+		const { entityService } = makeService();
+		const response = makeItem(1, "Updated Entity");
+
+		global.fetch = async (input, init) => {
+			assert.equal(input, `https://example.com${entityPath}/1`);
+			assert.equal(init?.method, "PUT");
+			assert.deepEqual(JSON.parse(init?.body as string), {
+				name: "Updated Entity",
+			});
+			return new Response(JSON.stringify(response), { status: 200 });
+		};
+
+		const result = await entityService.replace({
+			id: 1,
+			name: "Updated Entity",
+		});
 
 		assert.deepStrictEqual(result, response);
 	});
@@ -600,7 +837,7 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should ignore a trailing slash in the path of the resource", async () => {
-		const service = entityServiceBuilder<EntityIri, EntityBody, Entity>(
+		const service = entityServiceBuilder<EntityIri, Entity>(
 			"https://example.com",
 			"/entities/",
 		);
@@ -957,7 +1194,7 @@ describe("entityServiceBuilder", () => {
 
 	test("should build the IRI from a string identifier", async () => {
 		type BookIri = Iri<"books", string>;
-		const bookService = entityServiceBuilder<BookIri, EntityBody, Entity>(
+		const bookService = entityServiceBuilder<BookIri, Entity>(
 			"https://example.com",
 			"/books",
 		);
@@ -986,11 +1223,10 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should encode a string identifier", async () => {
-		const bookService = entityServiceBuilder<
-			Iri<"books", string>,
-			EntityBody,
-			Entity
-		>("https://example.com/api", "/books");
+		const bookService = entityServiceBuilder<Iri<"books", string>, Entity>(
+			"https://example.com/api",
+			"/books",
+		);
 		const urls: string[] = [];
 
 		global.fetch = async (input) => {
@@ -1010,11 +1246,10 @@ describe("entityServiceBuilder", () => {
 	});
 
 	test("should reject an identifier that cannot be a path segment", async () => {
-		const bookService = entityServiceBuilder<
-			Iri<"books", string>,
-			EntityBody,
-			Entity
-		>("https://example.com/api", "/books");
+		const bookService = entityServiceBuilder<Iri<"books", string>, Entity>(
+			"https://example.com/api",
+			"/books",
+		);
 		const fetchMock = mock.fn(async () => new Response("{}"));
 		global.fetch = fetchMock;
 

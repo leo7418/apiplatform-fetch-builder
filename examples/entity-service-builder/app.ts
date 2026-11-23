@@ -1,12 +1,8 @@
 import fetchBuilder, { entityServiceBuilder } from "apiplatform-fetch-builder";
 
-import type { CompanyIri, CompanyBody, Company } from "./types/company.ts";
+import type { CompanyIri, Company } from "./types/company.ts";
 
-const companyServiceBuilder = entityServiceBuilder<
-	CompanyIri,
-	CompanyBody,
-	Company
->;
+const companyServiceBuilder = entityServiceBuilder<CompanyIri, Company>;
 
 const companiesService = companyServiceBuilder(
 	fetchBuilder("https://your-api.com"),
@@ -53,6 +49,37 @@ const company = await companiesService.get("/companies/1");
 
 console.log(company);
 
+// Send an item back as it was read, with a change
+const renamed = await companiesService.update({ ...company, name: "Acme" });
+console.log(renamed.name);
+
+// Send back an item narrowed by a selection
+const narrowed = await companiesService.get(1, {
+	properties: ["name", "website"],
+});
+await companiesService.update(narrowed);
+
+// Identify an item by its IRI or by its id, whichever is known
+const known: { iri?: CompanyIri; id?: number } = { id: 1 };
+await companiesService.upsert({
+	"@id": known.iri,
+	id: known.id,
+	name: "Acme",
+});
+await companiesService.update({
+	"@id": company["@id"],
+	id: known.id,
+	ceo: { "@id": undefined, firstName: "Ada" },
+});
+
+// Create with the properties the API does not fill itself
+const created = await companiesService.create({
+	name: "Globex",
+	description: "Energy",
+	ceo: "/users/1",
+});
+console.log(created["@id"]);
+
 // Fetch all companies across all pages
 const allCompanies = await companiesService.getAllPages();
 console.log(`Fetched ${allCompanies.totalItems} companies`);
@@ -76,7 +103,7 @@ const partial = await companiesService.getAllPages(
 );
 console.log(`Fetched ${partial.totalItems} companies`);
 
-// With both getOptions and onProgress
+// With both query and onProgress
 const filtered = await companiesService.getAllPages(
 	{ sortBy: [{ id: "name", desc: false }], pageSize: 100 },
 	({ progressPercent }) => console.log(`${progressPercent}%`),

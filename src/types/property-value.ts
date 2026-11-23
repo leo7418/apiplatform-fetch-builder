@@ -97,13 +97,12 @@ type SafeRoot<T> = T extends readonly (infer U)[]
 	? U
 	: SafeGetCollectionItem<T>;
 
+type Selected<Root, P extends string> = Root extends unknown
+	? SecureType<UnionToIntersection<DeepPick<Root, P>>, object>
+	: never;
+
 export type PropertyValue<T extends object, P extends PropertyPath<T>> = [
 	P,
 ] extends [never]
 	? T
-	: Simplify<
-			KeepHydra<
-				T,
-				SecureType<UnionToIntersection<DeepPick<SafeRoot<T>, P>>, object>
-			>
-		>;
+	: Simplify<KeepHydra<T, Selected<SafeRoot<T>, P>>>;

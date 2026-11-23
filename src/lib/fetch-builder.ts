@@ -1,15 +1,20 @@
 import { ApiError } from "./api-error.ts";
-import { isObject, last, toPath } from "./utils.ts";
+import { isObject, isPlainObject, last, toPath } from "./utils.ts";
 import type { PropertyPath } from "../types/property-path.ts";
 import type { PropertyValue } from "../types/property-value.ts";
 
 type FetchMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
-export type FetchOptions<In = never> = Omit<RequestInit, "method" | "body"> & {
-	body?: In;
+type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
+
+export type FetchOptions = Omit<RequestInit, "method" | "body">;
+
+type RequestOptions = FetchOptions & {
+	body?: unknown;
+	searchParams?: URLSearchParams;
 };
 
-type AnyGetOptions = {
+type AnyQueryOptions = {
 	pagination?: boolean;
 	pageIndex?: number;
 	pageSize?: number;
@@ -29,7 +34,7 @@ type AnyGetOptions = {
 	properties?: string[];
 };
 
-export type GetOptions<
+export type QueryOptions<
 	Out extends object,
 	P extends PropertyPath<Out>[] | undefined,
 > = {
@@ -72,62 +77,68 @@ export type BuilderConfig = Omit<RequestInit, "method" | "body" | "headers"> & {
 	/** Other origins the API uses in its IRIs; a request to one of them is sent to the entrypoint. */
 	originAliases?: string[];
 	/** Headers sent with every request; a function is called before each request. */
-	headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
+	headers?: HeadersInput | (() => HeadersInput | Promise<HeadersInput>);
 	/** Called on a 401 response with a fetcher that has neither the headers nor the hooks; the request is then retried. */
 	refreshAuth?: (fetcher: Fetcher) => void | Promise<void>;
 	/** Called when the response is still a 401 after the retry, when the API refuses the refresh, or when there is no `refreshAuth`. */
 	onUnauthorized?: () => void | Promise<void>;
 };
 
-type GetOptionsBuilder<Out extends object, P extends PropertyPath<Out>[]> = {
+export type SelectionBuilder<
+	Out extends object,
+	P extends PropertyPath<Out>[],
+> = {
 	fetch: (options?: FetchOptions) => Promise<PropertyValue<Out, P[number]>>;
 	fetchRaw: (options?: FetchOptions) => Promise<Response>;
-	withHeaders: (headers: HeadersInit) => GetOptionsBuilder<Out, P>;
+	withHeaders: (headers: HeadersInput | undefined) => SelectionBuilder<Out, P>;
 };
 
-type GetBuilder<Out extends object> = {
+export type GetBuilder<Out extends object> = {
 	fetch: (options?: FetchOptions) => Promise<Out>;
 	fetchRaw: (options?: FetchOptions) => Promise<Response>;
-	withHeaders: (headers: HeadersInit) => GetBuilder<Out>;
-	withOptions: <P extends PropertyPath<Out>[] = []>(
-		getOptions: GetOptions<Out, P>,
-	) => GetOptionsBuilder<Out, P>;
+	withHeaders: (headers: HeadersInput | undefined) => GetBuilder<Out>;
+	withQuery: <P extends PropertyPath<Out>[] = []>(
+		query: QueryOptions<Out, P>,
+	) => SelectionBuilder<Out, P>;
 };
 
-type BodyBuilder<Out extends object | null, In> = {
-	fetch: (options?: FetchOptions<In>) => Promise<Out>;
-	fetchRaw: (options?: FetchOptions<In>) => Promise<Response>;
-	withHeaders: (headers: HeadersInit) => BodyBuilder<Out, In>;
+export type BodyBuilder<Out extends object | null> = {
+	fetch: (options?: FetchOptions) => Promise<Out>;
+	fetchRaw: (options?: FetchOptions) => Promise<Response>;
+	withHeaders: (headers: HeadersInput | undefined) => BodyBuilder<Out>;
 };
 
-type MutationBuilder<Out extends object | null, In> = {
-	fetch: (body: In, options?: FetchOptions<In>) => Promise<Out>;
-	fetchRaw: (body: In, options?: FetchOptions<In>) => Promise<Response>;
-	withHeaders: (headers: HeadersInit) => MutationBuilder<Out, In>;
-	withBody: (body: In) => BodyBuilder<Out, In>;
+export type MutationBuilder<Out extends object | null, In> = {
+	fetch: (body: In, options?: FetchOptions) => Promise<Out>;
+	fetchRaw: (body: In, options?: FetchOptions) => Promise<Response>;
+	withHeaders: (headers: HeadersInput | undefined) => MutationBuilder<Out, In>;
+	withBody: (body: In) => BodyBuilder<Out>;
 };
 
-type DeleteBuilder = {
+export type DeleteBuilder = {
 	fetch: (options?: FetchOptions) => Promise<null>;
-	withHeaders: (headers: HeadersInit) => DeleteBuilder;
+	fetchRaw: (options?: FetchOptions) => Promise<Response>;
+	withHeaders: (headers: HeadersInput | undefined) => DeleteBuilder;
 };
 
 type Mutation = <Out extends object | null, In>(
 	url: string,
-	headers?: HeadersInit,
 ) => MutationBuilder<Out, In>;
 
 export type Fetcher = {
-	get: <Out extends object>(
-		url: string,
-		headers?: HeadersInit,
-	) => GetBuilder<Out>;
+	get: <Out extends object>(url: string) => GetBuilder<Out>;
 	post: Mutation;
 	patch: Mutation;
 	put: Mutation;
-	delete: (url: string, headers?: HeadersInit) => DeleteBuilder;
+	delete: (url: string) => DeleteBuilder;
 	clone: (overrides?: Partial<BuilderConfig>) => Fetcher;
 };
+
+type RequestState = { url: string; headers: HeadersInput[] } & (
+	| { method: "GET"; query?: AnyQueryOptions }
+	| { method: "POST" | "PATCH" | "PUT"; body?: { value: unknown } }
+	| { method: "DELETE" }
+);
 
 type RefreshFailure = {
 	cause: unknown;
@@ -144,7 +155,7 @@ const assertSafeKey = (key: string, context: string) => {
 	}
 };
 
-const mergeHeaders = (...sources: (HeadersInit | undefined)[]): Headers => {
+const mergeHeaders = (...sources: (HeadersInput | undefined)[]): Headers => {
 	const merged = new Headers();
 	sources.forEach((source) =>
 		new Headers(source).forEach((value, key) => merged.set(key, value)),
@@ -155,13 +166,13 @@ const mergeHeaders = (...sources: (HeadersInit | undefined)[]): Headers => {
 const resolveHeaders = async (headers: BuilderConfig["headers"]) =>
 	typeof headers === "function" ? headers() : headers;
 
-const copyHeaders = (headers?: HeadersInit): HeadersInit | undefined =>
-	headers && Symbol.iterator in headers
+const copyHeaders = (headers: HeadersInput): HeadersInput =>
+	Symbol.iterator in headers
 		? Array.from(
 				headers as Iterable<[string, string]>,
 				(header): [string, string] => [...header],
 			)
-		: headers && { ...headers };
+		: { ...headers };
 
 const unlessAborted = <T>(promise: Promise<T>, signal?: AbortSignal | null) =>
 	new Promise<T>((resolve, reject) => {
@@ -198,14 +209,14 @@ const parseErrorBody = (text: string): unknown => {
 	}
 };
 
-const buildGetOptions = ({
+const buildQuery = ({
 	pagination,
 	pageIndex,
 	pageSize,
 	sortBy = [],
 	filters = [],
 	properties = [],
-}: AnyGetOptions): URLSearchParams => {
+}: AnyQueryOptions): URLSearchParams => {
 	const searchParams = new URLSearchParams();
 
 	if (pagination !== undefined) {
@@ -230,7 +241,7 @@ const buildGetOptions = ({
 				searchParams.append(`${id}[]`, subValue.toString()),
 			);
 		} else if (isObject(value)) {
-			if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+			if (!isPlainObject(value)) {
 				throw new TypeError(`Unsupported filter value: "${id}"`);
 			}
 			Object.keys(value).forEach((subId) => {
@@ -303,9 +314,9 @@ const createFetcher = (
 		return url.toString();
 	};
 
-	const buildHeaders = async <In = never>(
+	const buildHeaders = async (
 		method: FetchMethod,
-		{ body, headers }: FetchOptions<In>,
+		{ body, headers }: RequestOptions,
 	) =>
 		mergeHeaders(
 			{
@@ -323,10 +334,10 @@ const createFetcher = (
 			headers,
 		);
 
-	const doFetch = <In = never>(
+	const doFetch = (
 		url: string,
 		method: FetchMethod,
-		options: FetchOptions<In> & { searchParams?: URLSearchParams },
+		options: RequestOptions,
 		headers: Headers,
 	): Promise<globalThis.Response> => {
 		const { body, searchParams, ...restOptions } = options;
@@ -347,17 +358,17 @@ const createFetcher = (
 		});
 	};
 
-	const send = async <In = never>(
+	const send = async (
 		url: string,
 		method: FetchMethod,
-		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
+		options: RequestOptions,
 	): Promise<globalThis.Response> => {
 		const unauthorizedBodies = new Map<globalThis.Response, string>();
 		const attempt = async (given?: Headers) => {
 			const headers = given ?? (await buildHeaders(method, options));
 			return {
 				credentials: credentialsOf(headers),
-				response: await doFetch<In>(url, method, options, headers),
+				response: await doFetch(url, method, options, headers),
 			};
 		};
 		const retry = async (headers?: Headers) => {
@@ -466,19 +477,19 @@ const createFetcher = (
 		return response;
 	};
 
-	const request = async <Out extends object | null, In = never>(
+	const request = async (
 		url: string,
 		method: FetchMethod,
-		options: FetchOptions<In> & { searchParams?: URLSearchParams } = {},
-	): Promise<Out> => {
-		const response = await send<In>(url, method, options);
+		options: RequestOptions,
+	): Promise<unknown> => {
+		const response = await send(url, method, options);
 		const text = await response.text();
 
 		if (method === "DELETE" || (text === "" && method !== "GET")) {
-			return null as Out;
+			return null;
 		}
 		try {
-			return JSON.parse(text) as Out;
+			return JSON.parse(text);
 		} catch {
 			throw new ApiError(response.status, text, {
 				message: "Response is not JSON",
@@ -487,119 +498,61 @@ const createFetcher = (
 		}
 	};
 
-	const makeGetBuilder = <Out extends object>(
-		url: string,
-		...headers: (HeadersInit | undefined)[]
-	): GetBuilder<Out> => ({
-		fetch: async (options?: FetchOptions) =>
-			request<Out>(url, "GET", {
+	const makeBuilder = <Builder>(state: RequestState): Builder => {
+		const query = state.method === "GET" ? state.query : undefined;
+		const given =
+			state.method === "GET" || state.method === "DELETE"
+				? undefined
+				: state.body;
+		const takesBody =
+			state.method !== "GET" && state.method !== "DELETE" && !given;
+		const prepare = (args: unknown[]): RequestOptions => {
+			const [body, options] = (takesBody ? args : [given?.value, args[0]]) as [
+				unknown,
+				FetchOptions | undefined,
+			];
+			return {
 				...options,
-				headers: mergeHeaders(...headers, options?.headers),
-			}),
-		fetchRaw: async (options?: FetchOptions) =>
-			send(url, "GET", {
-				...options,
-				headers: mergeHeaders(...headers, options?.headers),
-			}),
-		withHeaders: (h: HeadersInit) =>
-			makeGetBuilder<Out>(url, ...headers, copyHeaders(h)),
-		withOptions: <P extends PropertyPath<Out>[]>(
-			getOptions: GetOptions<Out, P>,
-		) => ({
-			fetch: async (options?: FetchOptions) =>
-				request<PropertyValue<Out, P[number]>>(url, "GET", {
-					...options,
-					headers: mergeHeaders(...headers, options?.headers),
-					searchParams: buildGetOptions(getOptions as AnyGetOptions),
-				}),
-			fetchRaw: async (options?: FetchOptions) =>
-				send(url, "GET", {
-					...options,
-					headers: mergeHeaders(...headers, options?.headers),
-					searchParams: buildGetOptions(getOptions as AnyGetOptions),
-				}),
-			withHeaders: (h: HeadersInit) =>
-				makeGetBuilder<Out>(url, ...headers, copyHeaders(h)).withOptions(
-					getOptions,
-				),
-		}),
-	});
-
-	const makeMutationBuilder = <Out extends object | null, In>(
-		method: "POST" | "PATCH" | "PUT",
-		url: string,
-		...headers: (HeadersInit | undefined)[]
-	): MutationBuilder<Out, In> => ({
-		fetch: async (body: In, options?: FetchOptions<In>) =>
-			request<Out, In>(url, method, {
-				...options,
-				headers: mergeHeaders(...headers, options?.headers),
+				headers: mergeHeaders(...state.headers, options?.headers),
 				body,
-			}),
-		fetchRaw: async (body: In, options?: FetchOptions<In>) =>
-			send<In>(url, method, {
-				...options,
-				headers: mergeHeaders(...headers, options?.headers),
-				body,
-			}),
-		withHeaders: (h: HeadersInit) =>
-			makeMutationBuilder<Out, In>(method, url, ...headers, copyHeaders(h)),
-		withBody: (b: In) => ({
-			fetch: async (options?: FetchOptions<In>) =>
-				request<Out, In>(url, method, {
-					...options,
-					headers: mergeHeaders(...headers, options?.headers),
-					body: b,
+				searchParams: query && buildQuery(query),
+			};
+		};
+
+		return {
+			fetch: async (...args: unknown[]) =>
+				request(state.url, state.method, prepare(args)),
+			fetchRaw: async (...args: unknown[]) =>
+				send(state.url, state.method, prepare(args)),
+			withHeaders: (headers: HeadersInput | undefined) =>
+				makeBuilder<Builder>({
+					...state,
+					headers: headers
+						? [...state.headers, copyHeaders(headers)]
+						: state.headers,
 				}),
-			fetchRaw: async (options?: FetchOptions<In>) =>
-				send<In>(url, method, {
-					...options,
-					headers: mergeHeaders(...headers, options?.headers),
-					body: b,
-				}),
-			withHeaders: (h: HeadersInit) =>
-				makeMutationBuilder<Out, In>(
-					method,
-					url,
-					...headers,
-					copyHeaders(h),
-				).withBody(b),
-		}),
-	});
-
-	const get = <Out extends object>(url: string, headers?: HeadersInit) =>
-		makeGetBuilder<Out>(url, copyHeaders(headers));
-
-	const post = <Out extends object | null, In>(
-		url: string,
-		headers?: HeadersInit,
-	) => makeMutationBuilder<Out, In>("POST", url, copyHeaders(headers));
-
-	const patch = <Out extends object | null, In>(
-		url: string,
-		headers?: HeadersInit,
-	) => makeMutationBuilder<Out, In>("PATCH", url, copyHeaders(headers));
-
-	const put = <Out extends object | null, In>(
-		url: string,
-		headers?: HeadersInit,
-	) => makeMutationBuilder<Out, In>("PUT", url, copyHeaders(headers));
-
-	const makeDeleteBuilder = (
-		url: string,
-		...headers: (HeadersInit | undefined)[]
-	): DeleteBuilder => ({
-		fetch: async (options?: FetchOptions) =>
-			request<null>(url, "DELETE", {
-				...options,
-				headers: mergeHeaders(...headers, options?.headers),
+			...(takesBody && {
+				withBody: (value: unknown) =>
+					makeBuilder({ ...state, body: { value } }),
 			}),
-		withHeaders: (h: HeadersInit) =>
-			makeDeleteBuilder(url, ...headers, copyHeaders(h)),
-	});
+			...(state.method === "GET" &&
+				!query && {
+					withQuery: (selection: AnyQueryOptions) =>
+						makeBuilder({ ...state, query: selection }),
+				}),
+		} as Builder;
+	};
 
-	const del = (url: string, headers?: HeadersInit) =>
-		makeDeleteBuilder(url, copyHeaders(headers));
+	const get = <Out extends object>(url: string) =>
+		makeBuilder<GetBuilder<Out>>({ method: "GET", url, headers: [] });
+
+	const mutation =
+		(method: "POST" | "PATCH" | "PUT") =>
+		<Out extends object | null, In>(url: string) =>
+			makeBuilder<MutationBuilder<Out, In>>({ method, url, headers: [] });
+
+	const del = (url: string) =>
+		makeBuilder<DeleteBuilder>({ method: "DELETE", url, headers: [] });
 
 	const clone = (overrides: Partial<BuilderConfig> = {}): Fetcher =>
 		createFetcher(
@@ -616,7 +569,14 @@ const createFetcher = (
 			overrides.refreshAuth ? new Map() : refreshState,
 		);
 
-	return { get, post, patch, put, delete: del, clone };
+	return {
+		get,
+		post: mutation("POST"),
+		patch: mutation("PATCH"),
+		put: mutation("PUT"),
+		delete: del,
+		clone,
+	};
 };
 
 const fetchBuilder = (

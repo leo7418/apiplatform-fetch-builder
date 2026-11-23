@@ -1,13 +1,17 @@
 import type { AnyIri, Iri } from "./iri.ts";
-import type { Item } from "./item.ts";
+import type { Embedded, Item } from "./item.ts";
 import type { HydraKeys, HydraPrefix } from "./register.ts";
+
+type WithoutContext<T> = T extends { "@context": unknown }
+	? Omit<T, "@context">
+	: T;
 
 export type PartialCollection<T, I extends AnyIri = Iri<string>> = {
 	"@context": string;
 	"@id": string;
 	"@type": `${HydraPrefix}Collection`;
 } & HydraKeys<{
-	member: Omit<Item<T, I>, "@context">[];
+	member: Embedded<WithoutContext<T>, I>[];
 	view?: {
 		"@id": string;
 		"@type": `${HydraPrefix}PartialCollectionView`;

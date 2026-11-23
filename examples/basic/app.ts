@@ -6,7 +6,7 @@ const fetcher = fetchBuilder("https://your-api.com");
 
 const companies = await fetcher
 	.get<CompanyCollection>("/companies")
-	.withOptions({
+	.withQuery({
 		pagination: true,
 		pageIndex: 1,
 		pageSize: 10,

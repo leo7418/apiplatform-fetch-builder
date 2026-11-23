@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 
 import entityServiceBuilder from "../lib/entity-service-builder.ts";
 import fetchBuilder from "../lib/fetch-builder.ts";
+import type { ReplaceBody, WriteBody } from "./body.ts";
 import type { Collection, PartialCollection } from "./collection.ts";
-import type { AbsoluteIri, GetIri, Iri, IriId } from "./iri.ts";
+import type { AbsoluteIri, AnyIri, GetIri, Iri, IriId } from "./iri.ts";
 import type { Embedded, Item } from "./item.ts";
 import type { PropertyPath } from "./property-path.ts";
 import type { PropertyValue } from "./property-value.ts";
@@ -80,7 +81,7 @@ describe("types", () => {
 
 		await api
 			.get<Users>("/users")
-			.withOptions({
+			.withQuery({
 				sortBy: [{ id: "company.name", desc: false }],
 				filters: [
 					{ id: "name", value: "Alice" },
@@ -91,7 +92,7 @@ describe("types", () => {
 		await api
 			.get<Users>("/users")
 			// @ts-expect-error sorting takes a property path
-			.withOptions({ sortBy: [{ id: "unknown", desc: false }] })
+			.withQuery({ sortBy: [{ id: "unknown", desc: false }] })
 			.fetch();
 
 		assert.equal(
@@ -119,7 +120,7 @@ describe("types", () => {
 
 		const users = await api
 			.get<Users>("/users")
-			.withOptions({ properties: ["name", "company.name"] })
+			.withQuery({ properties: ["name", "company.name"] })
 			.fetch();
 		const [user] = users.member;
 		const name: string = user.name;
@@ -148,7 +149,7 @@ describe("types", () => {
 
 		const users = await api
 			.get<Users>("/users")
-			.withOptions({ properties: ["company"] })
+			.withQuery({ properties: ["company"] })
 			.fetch();
 		const company: CompanyIri = users.member[0].company;
 
@@ -281,7 +282,7 @@ describe("types", () => {
 
 		const users = await api
 			.get<Users>("/users")
-			.withOptions({ sortBy: [{ id: "name", desc: false }] })
+			.withQuery({ sortBy: [{ id: "name", desc: false }] })
 			.fetch();
 		const check: Equal<
 			(typeof users.member)[number]["company"],
@@ -308,12 +309,10 @@ describe("types", () => {
 
 	test("a service on a partially paginated resource should have no total", async () => {
 		respond({ member: [], view: { next: "/api/users?page=2" } });
-		const logs = entityServiceBuilder<
-			UserIri,
-			{ name: string },
-			User,
-			{ pagination: "partial" }
-		>(api, "/users");
+		const logs = entityServiceBuilder<UserIri, User, { pagination: "partial" }>(
+			api,
+			"/users",
+		);
 
 		const page = await logs.getAll();
 		const selected = await logs.getAll({ properties: ["name"] });
@@ -327,13 +326,438 @@ describe("types", () => {
 		assert.equal(total, 0);
 	});
 
+	test("the body of a write should follow the model of the resource", async () => {
+		type Article = {
+			readonly id: number;
+			title: string;
+			subtitle?: string;
+			summary: string | null;
+			readonly slug: string;
+			author: Company | CompanyIri;
+			reviewers: (Company | CompanyIri)[];
+			owner: { name: string };
+			address: { city: string; readonly formatted: string };
+			tags: readonly string[];
+		};
+		type Sent = WriteBody<Article>;
+		const checks: [
+			Equal<
+				keyof Sent,
+				| "title"
+				| "subtitle"
+				| "summary"
+				| "author"
+				| "reviewers"
+				| "owner"
+				| "address"
+				| "tags"
+			>,
+			Equal<Sent["title"], string | undefined>,
+			Equal<Sent["subtitle"], string | null | undefined>,
+			Equal<Sent["summary"], string | null | undefined>,
+			Equal<Extract<Sent["author"], string>, CompanyIri>,
+			Equal<
+				Sent["owner"],
+				| AnyIri
+				| { "@id": AnyIri; "@type"?: string }
+				| ({ name?: string } & object)
+				| undefined
+			>,
+			Equal<
+				Sent["address"],
+				| AnyIri
+				| { "@id": AnyIri; "@type"?: string }
+				| ({ city?: string } & object)
+				| undefined
+			>,
+			Equal<Sent["tags"], readonly string[] | undefined>,
+			Equal<
+				WriteBody<{ id: string; name: string }>,
+				{ id?: string; name?: string }
+			>,
+			Equal<WriteBody<{ sentAt: Date }>, { sentAt?: Date }>,
+		] = [true, true, true, true, true, true, true, true, true, true];
+		respond({ "@id": "/api/articles/1", "@type": "Article", slug: "hello" });
+		const articles = entityServiceBuilder<Iri<"api/articles">, Article>(
+			api,
+			"/articles",
+		);
+
+		await articles.create({
+			title: "Hello",
+			author: "/api/companies/acme",
+			reviewers: ["/api/companies/acme"],
+			owner: "/api/users/1",
+			address: { city: "Paris" },
+		});
+		await articles.update(1, { summary: null, owner: { name: "Alice" } });
+		await articles.update(1, { author: { "@id": "/api/companies/acme" } });
+		await articles.update(1, {
+			author: { "@id": "/api/companies/acme", "@type": "Company" },
+		});
+		const user = {} as Item<User, UserIri>;
+		// @ts-expect-error a relation does not take the item of another resource
+		await articles.update(1, { author: user });
+		// @ts-expect-error a relation does not take an unrelated object
+		await articles.update(1, { author: new Date(0) });
+		const slug: string = (await articles.get(1)).slug;
+		// @ts-expect-error a computed property is not sent
+		await articles.update(1, { slug: "hello" });
+		// @ts-expect-error a relation that names its IRI does not take another one
+		await articles.update(1, { author: "/api/users/1" });
+		// @ts-expect-error a property that is not nullable does not take null
+		await articles.create({ title: null });
+		// @ts-expect-error a property the resource does not have is not sent
+		await articles.create({ title: "Hello", missing: true });
+
+		assert.ok(checks.every(Boolean));
+		assert.equal(slug, "hello");
+	});
+
+	test("a property the API fills by default should not have to be sent", async () => {
+		type Article = { title: string; status: string; subtitle?: string };
+		respond({ "@id": "/api/articles/1", "@type": "Article", title: "Hello" });
+		const articles = entityServiceBuilder<Iri<"api/articles">, Article>(
+			api,
+			"/articles",
+		);
+		const strict = entityServiceBuilder<
+			Iri<"api/articles">,
+			Article,
+			{ body: WriteBody<Article> & { title: string } }
+		>(api, "/articles");
+
+		await articles.create({ title: "Hello" });
+		await articles.upsert({ title: "Hello" });
+		// @ts-expect-error a given body can require a property
+		await strict.create({ status: "published" });
+	});
+
+	test("replace should take every property that is not nullable", async () => {
+		type Article = {
+			title: string;
+			status: string;
+			subtitle?: string;
+			summary: string | null;
+			address: { city: string; zip?: string };
+			readonly slug: string;
+		};
+		type Expected = {
+			title: string;
+			status: string;
+			address:
+				| AnyIri
+				| { "@id": AnyIri; "@type"?: string }
+				| ({ city: string; zip?: string | null } & object);
+			subtitle?: string | null;
+			summary?: string | null;
+		};
+		const check: Equal<ReplaceBody<Article>, Expected> = true;
+		respond({ "@id": "/api/articles/1", "@type": "Article", slug: "hello" });
+		const articles = entityServiceBuilder<Iri<"api/articles">, Article>(
+			api,
+			"/articles",
+		);
+		const address = { city: "Paris" };
+
+		await articles.replace(1, { title: "Hello", status: "published", address });
+		// @ts-expect-error a PUT resets the properties that are left out
+		await articles.replace(1, { title: "Hello", address });
+		// @ts-expect-error a PUT resets the properties of a nested object too
+		await articles.replace(1, { title: "Hello", status: "draft", address: {} });
+
+		const partial: ReplaceBody<{ company: Company | CompanyIri }> = {
+			// @ts-expect-error a relation written as an object is whole
+			company: { name: "Acme" },
+		};
+
+		assert.ok(check && partial);
+	});
+
+	test("an item should be sent back as it was read", async () => {
+		type Article = {
+			readonly id: number;
+			title: string;
+			subtitle?: string;
+			author: Company | CompanyIri;
+			reviewers: (Company | CompanyIri)[];
+			readonly slug: string;
+		};
+		respond({
+			"@id": "/api/articles/1",
+			"@type": "Article",
+			id: 1,
+			title: "Hello",
+			author: "/api/companies/acme",
+			reviewers: [],
+			slug: "hello",
+		});
+		const articles = entityServiceBuilder<Iri<"api/articles">, Article>(
+			api,
+			"/articles",
+		);
+		const article = await articles.get(1);
+		const selected = await articles.get(1, {
+			properties: ["title", "author.name"],
+		});
+
+		await articles.update({ ...article, title: "Bye" });
+		await articles.update(article["@id"], article);
+		await articles.update(selected);
+		await articles.replace(article);
+		await articles.upsert(article);
+		await articles.create({ ...article, title: "Copy" });
+	});
+
+	test("the body should keep what a loose model declares", () => {
+		type Loose = {
+			name: string;
+			metadata: Record<string, unknown>;
+			payload: unknown;
+			position: readonly [string, number];
+			[key: string]: unknown;
+		};
+		type Polymorphic = { owner: Embedded<User, UserIri> | CompanyIri };
+		type Profile = Item<{ name: string; manager?: User | UserIri }, UserIri>;
+		const metadata: Record<string, unknown> = { views: 1 };
+		const loose: WriteBody<Loose> = {
+			metadata,
+			payload: metadata.views,
+			position: ["a", 1],
+			extra: true,
+		};
+		// @ts-expect-error a declared property keeps its type next to an index signature
+		const mistyped: WriteBody<Loose> = { name: 1 };
+		// @ts-expect-error a tuple keeps its length
+		const longer: WriteBody<Loose> = { position: ["a", 1, 2] };
+		const owners: WriteBody<Polymorphic>[] = [
+			{ owner: "/api/users/1" },
+			{ owner: "/api/companies/acme" },
+		];
+		const checks: [
+			Equal<keyof WriteBody<Profile>, "name" | "manager">,
+			Equal<Extract<WriteBody<Profile>["manager"], string>, UserIri>,
+			null extends WriteBody<Profile>["manager"] ? true : false,
+		] = [true, true, true];
+
+		assert.ok(loose && mistyped && longer && owners);
+		assert.ok(checks.every(Boolean));
+	});
+
+	test("a recursive JSON property should be written without a depth error", async () => {
+		type Json =
+			| string
+			| number
+			| boolean
+			| null
+			| { [key: string]: Json | undefined }
+			| Json[];
+		type Doc = { readonly id: number; title: string; data: Json };
+		respond({
+			"@id": "/api/docs/1",
+			"@type": "Doc",
+			id: 1,
+			title: "a",
+			data: {},
+		});
+		const docs = entityServiceBuilder<Iri<"api/docs">, Doc>(api, "/docs");
+		const doc = await docs.get(1);
+
+		await docs.create({ title: "a", data: { list: [1, { deep: null }] } });
+		await docs.update({ ...doc, title: "b" });
+		await docs.upsert(doc);
+		await docs.replace(doc);
+		// @ts-expect-error the property keeps its type
+		await docs.update(1, { data: Symbol("no") });
+	});
+
+	test("a relation narrowed to what cannot be written should be sent back", async () => {
+		type Owner = { readonly id: number; readonly slug: string; name: string };
+		type Project = {
+			readonly id: number;
+			name: string;
+			owner: Owner | UserIri;
+			members: (Owner | UserIri)[];
+		};
+		respond({ "@id": "/api/projects/1", "@type": "Project", name: "a" });
+		const projects = entityServiceBuilder<Iri<"api/projects">, Project>(
+			api,
+			"/projects",
+		);
+		const narrowed = await projects.get(1, {
+			properties: ["name", "owner.slug", "members.id"],
+		});
+
+		await projects.update(narrowed);
+		await projects.upsert(narrowed);
+		await projects.replace(narrowed);
+	});
+
+	test("the identifier of a resource should not be part of the body of an update", async () => {
+		type Shape =
+			| { readonly id: number; kind: "circle"; radius: number }
+			| { readonly id: number; kind: "square"; side: number };
+		type Tag = { id: string; label: string };
+		respond({ "@id": "/api/tags/a", "@type": "Tag", id: "a", label: "A" });
+		const shapes = entityServiceBuilder<Iri<"api/shapes">, Shape>(
+			api,
+			"/shapes",
+		);
+		const tags = entityServiceBuilder<Iri<"api/tags", string>, Tag>(
+			api,
+			"/tags",
+		);
+		const many: WriteBody<Tag[]> = [{ label: "A" }, { id: "b" }];
+		const whole: ReplaceBody<Tag[]> = [{ id: "a", label: "A" }];
+		const order: ReplaceBody<{ lines: { sku: string; quantity: number }[] }> = {
+			// @ts-expect-error every item of a nested list is whole too
+			lines: [{ sku: "a" }],
+		};
+		// @ts-expect-error every item of a replaced list is whole
+		const partial: ReplaceBody<Tag[]> = [{ id: "a" }];
+
+		await shapes.upsert({ id: null, kind: "square", side: 2 });
+		await tags.create({ id: "a", label: "A" });
+		await tags.upsert({ id: null, label: "A" });
+		await tags.upsert({ "@id": null, label: "A" });
+		await tags.replace("a", { label: "B" });
+		await tags.update({ id: "a", label: "B" });
+		// @ts-expect-error the identifier is in the path, not in the body
+		await tags.update("a", { id: "b" });
+
+		assert.equal(many.length + whole.length + partial.length, 4);
+		assert.equal(order.lines.length, 1);
+	});
+
+	test("an item should be sent back when its IRI is not built from its id", async () => {
+		type Article = {
+			readonly id: number;
+			readonly slug: string;
+			title: string;
+		};
+		respond({
+			"@id": "/api/articles/hello",
+			"@type": "Article",
+			title: "Hello",
+		});
+		const articles = entityServiceBuilder<Iri<"api/articles", string>, Article>(
+			api,
+			"/articles",
+		);
+		const article = await articles.get("hello");
+
+		await articles.update(article);
+		await articles.update({ ...article, title: "Bye" });
+		await articles.replace(article);
+		await articles.upsert(article);
+		// @ts-expect-error the numeric id does not identify the article
+		await articles.upsert({ id: 1, title: "Bye" });
+		// @ts-expect-error an identifier given alone has the type of the IRI
+		await articles.update({ id: 1, title: "Bye" });
+	});
+
+	test("a nested object narrowed to what cannot be written should be sent back", async () => {
+		type Venue = {
+			readonly id: number;
+			name: string;
+			address: { city: string; readonly formatted: string };
+			owner: { readonly slug: string; name: string };
+		};
+		respond({ "@id": "/api/venues/1", "@type": "Venue", name: "a" });
+		const venues = entityServiceBuilder<Iri<"api/venues">, Venue>(
+			api,
+			"/venues",
+		);
+		const narrowed = await venues.get(1, {
+			properties: ["name", "address.formatted", "owner.slug"],
+		});
+
+		await venues.update(narrowed);
+		await venues.upsert(narrowed);
+		await venues.update(1, {
+			owner: { "@id": "/api/users/1", "@type": "User" },
+		});
+		// @ts-expect-error a nested literal does not name a computed property
+		await venues.update(1, { address: { formatted: "x" } });
+	});
+
+	test("the members of a collection of items should have no context", () => {
+		type Member = Collection<Item<User, UserIri>, UserIri>["member"][number];
+		const check: Equal<
+			"@context" extends keyof Member ? true : false,
+			false
+		> = true;
+
+		assert.ok(check);
+	});
+
+	test("a union entity should keep its members when it is read", async () => {
+		type Shape =
+			| { readonly id: number; kind: "circle"; radius: number }
+			| { readonly id: number; kind: "square"; side: number };
+		respond({
+			member: [
+				{ "@id": "/api/shapes/1", "@type": "Shape", kind: "circle", radius: 2 },
+			],
+		});
+		const shapes = entityServiceBuilder<Iri<"api/shapes">, Shape>(
+			api,
+			"/shapes",
+		);
+		const [shape] = (await shapes.getAll()).member;
+		const selected = await shapes.getAll({ properties: ["kind", "radius"] });
+		const radius = shape?.kind === "circle" ? shape.radius : undefined;
+		const kinds: ("circle" | "square")[] = selected.member.map(
+			({ kind }) => kind,
+		);
+
+		const check: Equal<
+			(typeof selected.member)[number]["kind"],
+			"circle" | "square"
+		> = true;
+
+		if (shape) {
+			await shapes.replace(shape);
+		}
+		await shapes.update(1, { kind: "square", side: 2 });
+		await shapes.replace(1, { kind: "square", side: 2 });
+
+		assert.ok(check);
+		assert.equal(radius, 2);
+		assert.deepEqual(kinds, ["circle"]);
+	});
+
+	test("the body of a union should keep the properties of each member", () => {
+		type Shape =
+			| { kind: "circle"; radius: number }
+			| { kind: "square"; side: number };
+		const circle: WriteBody<Shape> = { kind: "circle", radius: 2 };
+		// @ts-expect-error a circle has no side
+		const mixed: WriteBody<Shape> = { kind: "circle", side: 2 };
+
+		assert.ok(circle && mixed);
+	});
+
+	test("a service should take another body when it is given one", async () => {
+		respond({ "@id": "/api/users/1", "@type": "User", name: "Alice" });
+		const accounts = entityServiceBuilder<
+			UserIri,
+			User,
+			{ body: { name: string; plainPassword: string } }
+		>(api, "/users");
+
+		await accounts.create({ name: "Alice", plainPassword: "secret" });
+		await accounts.update(1, { name: "Alice" });
+		// @ts-expect-error the given body replaces the deduced one
+		await accounts.create({ name: "Alice", email: "alice@example.com" });
+	});
+
 	test("a service without output should resolve its writes with null", async () => {
 		global.fetch = async () => new Response(null, { status: 204 });
 		const settings = entityServiceBuilder<
 			UserIri,
-			{ name: string },
 			User,
-			{ output: false }
+			{ output: false; body: { name: string } }
 		>(api, "/settings");
 
 		const created: null = await settings.create({ name: "Dark" });
@@ -342,12 +766,36 @@ describe("types", () => {
 		assert.deepEqual([created, updated], [null, null]);
 	});
 
+	test("an option of the service should count when its key is optional", async () => {
+		global.fetch = async () => new Response(null, { status: 204 });
+		const settings = entityServiceBuilder<
+			UserIri,
+			User,
+			{ body?: { secret: string }; output?: false; pagination?: "partial" }
+		>(api, "/settings");
+		const total = async () => {
+			const page = await settings.getAll();
+			// @ts-expect-error a partial collection has no total
+			return page.totalItems;
+		};
+
+		const created: null = await settings.create({ secret: "x" });
+		// @ts-expect-error the given body replaces the deduced one
+		await settings.create({ name: "Alice" });
+		// @ts-expect-error an optional key does not make the body optional
+		await settings.create(undefined);
+
+		assert.equal(created, null);
+		assert.equal(typeof total, "function");
+	});
+
 	test("upsert should accept a body without an identifier yet", async () => {
 		respond({ "@id": "/api/users/1", "@type": "User", name: "Alice" });
-		const users = entityServiceBuilder<UserIri, { name: string }, User>(
-			api,
-			"/users",
-		);
+		const users = entityServiceBuilder<
+			UserIri,
+			User,
+			{ body: { name: string } }
+		>(api, "/users");
 
 		await users.upsert({ name: "Alice" });
 		await users.upsert({ id: null, name: "Alice" });
@@ -381,7 +829,7 @@ describe("types", () => {
 		respond({ name: "Alice", address: { city: "Paris" } });
 		const account = await api
 			.get<Account>("/accounts/1")
-			.withOptions({ properties: ["name", "address.city", "company"] })
+			.withQuery({ properties: ["name", "address.city", "company"] })
 			.fetch();
 		const name: string = account.name;
 		const city: string = account.address.city;
@@ -390,7 +838,7 @@ describe("types", () => {
 		respond([{ name: "Alice" }]);
 		const accounts = await api
 			.get<Account[]>("/accounts")
-			.withOptions({
+			.withQuery({
 				properties: ["name"],
 				sortBy: [
 					{ id: "name", desc: false },
@@ -467,20 +915,39 @@ describe("types", () => {
 		assert.ok(checks.every(Boolean));
 	});
 
+	test("a request should take its headers and its body in one place", async () => {
+		respond({ "@id": "/api/users/1", "@type": "User", name: "Alice" });
+		const headers = { "X-Tenant": "acme" };
+
+		await api.get<object>("/users/1").withHeaders(headers).fetch({ headers });
+		await api
+			.post<object, { name: string }>("/users")
+			.fetch({ name: "Alice" }, { headers });
+		// @ts-expect-error headers are given with withHeaders or to fetch
+		api.get<object>("/users/1", headers);
+		// @ts-expect-error the body is the first argument
+		await api.post<object, object>("/users").fetch({}, { body: {} });
+		await api
+			.post<object, { name: string }>("/users")
+			.withBody({ name: "Alice" })
+			// @ts-expect-error the body was already given
+			.fetch({ name: "Bob" }, {});
+	});
+
 	test("a date filter should take its dates in a record", async () => {
 		respond({ member: [], totalItems: 0 });
 		const date = new Date("2020-01-01T00:00:00Z");
 
 		await api
 			.get<Users>("/users")
-			.withOptions({ filters: [{ id: "createdAt", value: { after: date } }] })
+			.withQuery({ filters: [{ id: "createdAt", value: { after: date } }] })
 			.fetch();
 		await assert.rejects(
 			() =>
 				api
 					.get<Users>("/users")
 					// @ts-expect-error a date on its own is not a filter value
-					.withOptions({ filters: [{ id: "createdAt", value: date }] })
+					.withQuery({ filters: [{ id: "createdAt", value: date }] })
 					.fetch(),
 			TypeError,
 		);
@@ -511,7 +978,7 @@ describe("types", () => {
 
 		const orders = await api
 			.get<Orders>("/orders")
-			.withOptions({ properties: ["customer.name"] })
+			.withQuery({ properties: ["customer.name"] })
 			.fetch();
 		const [order] = orders.member;
 		const orderIri: OrderIri = order["@id"];
@@ -523,10 +990,7 @@ describe("types", () => {
 		// @ts-expect-error a path is not an absolute IRI
 		const pathIri: OrderIri = "/api/orders/1";
 
-		const service = entityServiceBuilder<OrderIri, Order, Order>(
-			api,
-			"/orders",
-		);
+		const service = entityServiceBuilder<OrderIri, Order>(api, "/orders");
 		await service.get(1);
 		await service.get(orderIri);
 		await service.get(networkPathIri);
@@ -571,13 +1035,9 @@ describe("types", () => {
 			return new Response(JSON.stringify({}), { status: 200 });
 		};
 
-		const users = entityServiceBuilder<UserIri, { name: string }, User>(
-			api,
-			"/users",
-		);
+		const users = entityServiceBuilder<UserIri, User>(api, "/users");
 		const companies = entityServiceBuilder<
 			CompanyIri,
-			{ name: string },
 			{ name: string; city: string }
 		>(api, "/companies");
 

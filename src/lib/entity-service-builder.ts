@@ -1,6 +1,7 @@
 import { ApiError } from "./api-error.ts";
-import fetchBuilder, { type GetOptions } from "./fetch-builder.ts";
-import { isObject } from "./utils.ts";
+import fetchBuilder, { type QueryOptions } from "./fetch-builder.ts";
+import { isObject, isPlainObject } from "./utils.ts";
+import type { ReplaceBody, WriteBody } from "../types/body.ts";
 import type { Collection, PartialCollection } from "../types/collection.ts";
 import type { AnyIri, IriId } from "../types/iri.ts";
 import type { Item } from "../types/item.ts";
@@ -10,7 +11,7 @@ import type { PropertyValue } from "../types/property-value.ts";
 export type GetAllPagesProgress = {
 	page: number;
 	fetchedItems: number;
-	totalItems?: number;
+	totalItems?: number | undefined;
 	progressPercent: number;
 };
 
@@ -18,17 +19,52 @@ export type OnProgress = (
 	progress: GetAllPagesProgress,
 ) => boolean | void | Promise<boolean | void>;
 
-type ObjectWithId<T extends object, I extends AnyIri> = T &
-	({ "@id": I; id?: IriId<I> } | { "@id"?: I; id: IriId<I> });
+type OwnId<Entity> = Entity extends unknown
+	? "id" extends keyof Entity
+		? Entity["id" & keyof Entity]
+		: never
+	: never;
 
-type Unsaved<T> = T | (Omit<T, "id"> & { "@id"?: null; id?: null | "" });
+type ObjectWithId<T, I extends AnyIri, Id> = T &
+	(
+		| { "@id": I; id?: IriId<I> | Id | undefined }
+		| { "@id"?: I | undefined; id: IriId<I> }
+	);
+
+type WithoutId<T> = T extends unknown
+	? { [K in keyof T as K extends "id" ? never : K]: T[K] }
+	: never;
+
+type Unsaved<T, I extends AnyIri> = WithoutId<T> & {
+	"@id"?: I | null | undefined;
+	id?: IriId<I> | null | "" | undefined;
+};
 
 export type EntityServiceOptions = {
 	/** `"partial"` when the resource uses partial pagination, which has no total. */
 	pagination?: "partial";
 	/** `false` when the write operations of the resource return no content. */
 	output?: false;
+	/** Body of the write operations, when it is not the one deduced from the entity. */
+	body?: object;
 };
+
+type Option<
+	Options,
+	Key extends keyof EntityServiceOptions,
+> = Key extends keyof Options ? Exclude<Options[Key], undefined> : never;
+
+type BodyOf<Entity, Options> = [Option<Options, "body">] extends [never]
+	? WriteBody<Entity>
+	: Option<Options, "body">;
+
+type PatchBodyOf<Entity, Options> = WithoutId<Partial<BodyOf<Entity, Options>>>;
+
+type ReplaceBodyOf<Entity, Options> = WithoutId<
+	[Option<Options, "body">] extends [never]
+		? ReplaceBody<Entity>
+		: Option<Options, "body">
+>;
 
 type Collections<Entity, EntityIri extends AnyIri> = {
 	full: Collection<Entity, EntityIri>;
@@ -38,60 +74,71 @@ type Collections<Entity, EntityIri extends AnyIri> = {
 type Listed<EntityIri extends AnyIri, Entity, Options> = Collections<
 	Entity,
 	EntityIri
->[Options extends { pagination: "partial" } ? "partial" : "full"];
+>[[Option<Options, "pagination">] extends [never] ? "full" : "partial"];
 
-type Written<EntityIri extends AnyIri, Entity, Options> = Options extends {
-	output: false;
-}
-	? null
-	: Item<Entity, EntityIri>;
+type Written<EntityIri extends AnyIri, Entity, Options> = [
+	Option<Options, "output">,
+] extends [never]
+	? Item<Entity, EntityIri>
+	: null;
 
-type EntityService<
+export type EntityService<
 	EntityIri extends AnyIri,
-	EntityBody extends object,
 	Entity extends object,
 	Options extends EntityServiceOptions = object,
 > = {
-	create: (body: EntityBody) => Promise<Written<EntityIri, Entity, Options>>;
+	create: (
+		body: BodyOf<Entity, Options>,
+	) => Promise<Written<EntityIri, Entity, Options>>;
 	get: {
 		(iriOrId: EntityIri | IriId<EntityIri>): Promise<Item<Entity, EntityIri>>;
 		<P extends PropertyPath<Item<Entity, EntityIri>>[] = []>(
 			iriOrId: EntityIri | IriId<EntityIri>,
-			getOptions: GetOptions<Item<Entity, EntityIri>, P>,
+			query: QueryOptions<Item<Entity, EntityIri>, P>,
 		): Promise<PropertyValue<Item<Entity, EntityIri>, P[number]>>;
 	};
 	getAll: {
 		(): Promise<Listed<EntityIri, Entity, Options>>;
 		<P extends PropertyPath<Listed<EntityIri, Entity, Options>>[] = []>(
-			getOptions: GetOptions<Listed<EntityIri, Entity, Options>, P>,
+			query: QueryOptions<Listed<EntityIri, Entity, Options>, P>,
 		): Promise<PropertyValue<Listed<EntityIri, Entity, Options>, P[number]>>;
 	};
 	update: {
 		(
-			body: ObjectWithId<Partial<EntityBody>, EntityIri>,
+			body: ObjectWithId<
+				PatchBodyOf<Entity, Options>,
+				EntityIri,
+				OwnId<Entity>
+			>,
 		): Promise<Written<EntityIri, Entity, Options>>;
 		(
 			idOrIri: EntityIri | IriId<EntityIri>,
-			body: Partial<EntityBody>,
+			body: PatchBodyOf<Entity, Options>,
 		): Promise<Written<EntityIri, Entity, Options>>;
 	};
 	replace: {
 		(
-			body: ObjectWithId<EntityBody, EntityIri>,
+			body: ObjectWithId<
+				ReplaceBodyOf<Entity, Options>,
+				EntityIri,
+				OwnId<Entity>
+			>,
 		): Promise<Written<EntityIri, Entity, Options>>;
 		(
 			idOrIri: EntityIri | IriId<EntityIri>,
-			body: EntityBody,
+			body: ReplaceBodyOf<Entity, Options>,
 		): Promise<Written<EntityIri, Entity, Options>>;
 	};
 	upsert: (
-		body: Unsaved<EntityBody> | ObjectWithId<Partial<EntityBody>, EntityIri>,
+		body:
+			| Unsaved<BodyOf<Entity, Options>, EntityIri>
+			| ObjectWithId<PatchBodyOf<Entity, Options>, EntityIri, OwnId<Entity>>,
 	) => Promise<Written<EntityIri, Entity, Options>>;
 	getAllPages: {
 		(onProgress?: OnProgress): Promise<Collection<Entity, EntityIri>>;
 		(
-			getOptions: Omit<
-				GetOptions<Collection<Entity, EntityIri>, never[]>,
+			query: Omit<
+				QueryOptions<Collection<Entity, EntityIri>, never[]>,
 				"pagination" | "pageIndex"
 			>,
 			onProgress?: OnProgress,
@@ -100,9 +147,50 @@ type EntityService<
 	delete: (idOrIri: EntityIri | IriId<EntityIri>) => Promise<null>;
 };
 
+const IRI = /^(\/|[a-z][a-z\d+.-]*:\/\/)/i;
+const GENERATED_ID = /^_:|\/\.well-known\/genid\//;
+const API_CONTEXT = /\/contexts\/[^/]+$/;
+const ORIGIN = /^(?:[a-z][a-z\d+.-]*:)?\/\/[^/]*/i;
+
+const originOf = (iri: string) => ORIGIN.exec(iri)?.[0] ?? "";
+
+const decode = (segment: string) => {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return segment;
+	}
+};
+
+const toIris = (value: unknown): unknown => {
+	if (Array.isArray(value)) {
+		return value.map(toIris);
+	}
+	if (!isPlainObject(value)) {
+		return value;
+	}
+	const { "@context": context, "@id": id } = value;
+	const ownContext =
+		typeof context === "string" &&
+		typeof id === "string" &&
+		API_CONTEXT.test(context) &&
+		originOf(context) === originOf(id);
+	if (context !== undefined && !ownContext) {
+		return value;
+	}
+	const generated = typeof id === "string" && GENERATED_ID.test(id);
+	if (typeof id === "string" && IRI.test(id) && !generated) {
+		return id;
+	}
+	return Object.fromEntries(
+		Object.entries(value)
+			.filter(([key]) => !generated || (key !== "@id" && key !== "@type"))
+			.map(([key, nested]) => [key, toIris(nested)]),
+	);
+};
+
 const entityServiceBuilder = <
 	EntityIri extends AnyIri,
-	EntityBody extends object,
 	Entity extends object,
 	Options extends EntityServiceOptions = object,
 >(
@@ -114,7 +202,10 @@ const entityServiceBuilder = <
 		  }
 		| ReturnType<typeof fetchBuilder>,
 	entityPath: string,
-): EntityService<EntityIri, EntityBody, Entity, Options> => {
+): EntityService<EntityIri, Entity, Options> => {
+	type EntityBody = BodyOf<Entity, Options>;
+	type EntityPatchBody = PatchBodyOf<Entity, Options>;
+	type EntityReplaceBody = ReplaceBodyOf<Entity, Options>;
 	const fetcher =
 		typeof fetchOptions === "string"
 			? fetchBuilder(fetchOptions)
@@ -124,10 +215,7 @@ const entityServiceBuilder = <
 	const resourcePath = entityPath.replace(/\/+$/, "");
 
 	const parseIri = (iriOrId: EntityIri | IriId<EntityIri>): string => {
-		if (
-			typeof iriOrId === "string" &&
-			/^(\/|[a-z][a-z\d+.-]*:\/\/)/i.test(iriOrId)
-		) {
+		if (typeof iriOrId === "string" && IRI.test(iriOrId)) {
 			return iriOrId;
 		}
 		if (iriOrId == null || ["", ".", ".."].includes(String(iriOrId))) {
@@ -136,47 +224,55 @@ const entityServiceBuilder = <
 		return `${resourcePath}/${encodeURIComponent(iriOrId)}`;
 	};
 
-	const toBody = <T extends object>(body: T, keepId: boolean) =>
-		Object.getPrototypeOf(body) !== Object.prototype
-			? body
-			: (Object.fromEntries(
-					Object.entries(body).filter(
-						([key, value]) =>
-							!key.startsWith("@") &&
-							(key !== "id" || (keepId && value != null && value !== "")),
-					),
-				) as T);
+	const toBody = <T>(body: T, keepId: boolean): T => {
+		if (Array.isArray(body)) {
+			return body.map((item) => toBody(item, keepId)) as T;
+		}
+		if (!isPlainObject(body)) {
+			return body;
+		}
+		const iri = body["@id"];
+		const ownId =
+			typeof iri === "string" &&
+			decode(iri.slice(iri.lastIndexOf("/") + 1)) === String(body.id);
+		const keptId = keepId && !ownId;
+		return Object.fromEntries(
+			Object.entries(body)
+				.filter(
+					([key, value]) =>
+						!key.startsWith("@") &&
+						(key !== "id" || (keptId && value != null && value !== "")),
+				)
+				.map(([key, value]) => [key, toIris(value)]),
+		) as T;
+	};
 
-	const create = (body: EntityBody) =>
+	const create = async (body: EntityBody) =>
 		fetcher
 			.post<Item<Entity, EntityIri>, EntityBody>(resourcePath)
 			.fetch(toBody(body, true));
 
 	const get = async <P extends PropertyPath<Item<Entity, EntityIri>>[]>(
 		iriOrId: EntityIri | IriId<EntityIri>,
-		getOptions?: GetOptions<Item<Entity, EntityIri>, P>,
+		query?: QueryOptions<Item<Entity, EntityIri>, P>,
 	) => {
 		const builder = fetcher.get<Item<Entity, EntityIri>>(parseIri(iriOrId));
-		return getOptions
-			? builder.withOptions(getOptions).fetch()
-			: builder.fetch();
+		return query ? builder.withQuery(query).fetch() : builder.fetch();
 	};
 
 	const getAll = <P extends PropertyPath<Collection<Entity, EntityIri>>[]>(
-		getOptions?: GetOptions<Collection<Entity, EntityIri>, P>,
+		query?: QueryOptions<Collection<Entity, EntityIri>, P>,
 	) => {
 		const builder = fetcher.get<Collection<Entity, EntityIri>>(resourcePath);
-		return getOptions
-			? builder.withOptions(getOptions).fetch()
-			: builder.fetch();
+		return query ? builder.withQuery(query).fetch() : builder.fetch();
 	};
 
 	const update = async (
 		idOrIriOrBody:
-			| ObjectWithId<Partial<EntityBody>, EntityIri>
+			| ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>
 			| EntityIri
 			| IriId<EntityIri>,
-		maybeBody?: Partial<EntityBody>,
+		maybeBody?: EntityPatchBody,
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
@@ -189,21 +285,21 @@ const entityServiceBuilder = <
 		return fetcher
 			.patch<
 				Item<Entity, EntityIri>,
-				Partial<EntityBody>
+				EntityPatchBody
 			>(parseIri(iri as EntityIri | IriId<EntityIri>))
 			.fetch(body);
 	};
 
 	const replace = async (
 		idOrIriOrBody:
-			| ObjectWithId<EntityBody, EntityIri>
+			| ObjectWithId<EntityReplaceBody, EntityIri, OwnId<Entity>>
 			| EntityIri
 			| IriId<EntityIri>,
-		maybeBody?: EntityBody,
+		maybeBody?: EntityReplaceBody,
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
-				? (idOrIriOrBody["@id"] || idOrIriOrBody.id)!
+				? idOrIriOrBody["@id"] || idOrIriOrBody.id
 				: idOrIriOrBody;
 		const body = toBody(
 			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
@@ -211,53 +307,55 @@ const entityServiceBuilder = <
 		);
 
 		return fetcher
-			.put<Item<Entity, EntityIri>, EntityBody>(parseIri(iri))
+			.put<
+				Item<Entity, EntityIri>,
+				EntityReplaceBody
+			>(parseIri(iri as EntityIri | IriId<EntityIri>))
 			.fetch(body);
 	};
 
 	const upsert = (
-		body: EntityBody | ObjectWithId<Partial<EntityBody>, EntityIri>,
+		body: EntityBody | ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>,
 	): Promise<Item<Entity, EntityIri>> => {
 		const id =
-			(body as ObjectWithId<Partial<EntityBody>, EntityIri>)["@id"] ||
-			(body as ObjectWithId<Partial<EntityBody>, EntityIri>).id;
+			(body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>)[
+				"@id"
+			] || (body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>).id;
 
 		return id == null || id === ""
 			? create(body as EntityBody)
-			: update(body as ObjectWithId<Partial<EntityBody>, EntityIri>);
+			: update(body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>);
 	};
 
 	const getAllPages = async (
-		getOptionsOrOnProgress?:
+		queryOrOnProgress?:
 			| Omit<
-					GetOptions<Collection<Entity, EntityIri>, never[]>,
+					QueryOptions<Collection<Entity, EntityIri>, never[]>,
 					"pagination" | "pageIndex"
 			  >
 			| OnProgress,
 		maybeOnProgress?: OnProgress,
 	): Promise<Collection<Entity, EntityIri>> => {
-		const getOptions =
-			typeof getOptionsOrOnProgress === "function"
-				? undefined
-				: getOptionsOrOnProgress;
+		const query =
+			typeof queryOrOnProgress === "function" ? undefined : queryOrOnProgress;
 		const onProgress =
-			typeof getOptionsOrOnProgress === "function"
-				? getOptionsOrOnProgress
+			typeof queryOrOnProgress === "function"
+				? queryOrOnProgress
 				: maybeOnProgress;
-		let pageSize: number | undefined = getOptions?.pageSize ?? 100;
+		let pageSize: number | undefined = query?.pageSize ?? 100;
 		const fetchPage = (pageIndex?: number): Promise<Record<string, unknown>> =>
 			fetcher
 				.get<Collection<Entity, EntityIri>>(resourcePath)
-				.withOptions({
-					...getOptions,
+				.withQuery({
+					...query,
 					pageSize,
 					...(pageIndex !== undefined && { pageIndex }),
-				} as GetOptions<Collection<Entity, EntityIri>, never[]>)
+				} as QueryOptions<Collection<Entity, EntityIri>, never[]>)
 				.fetch();
 
 		const first = await fetchPage().catch((error: unknown) => {
 			if (
-				getOptions?.pageSize !== undefined ||
+				query?.pageSize !== undefined ||
 				!(error instanceof ApiError) ||
 				error.status !== 400
 			) {
@@ -347,7 +445,7 @@ const entityServiceBuilder = <
 		replace,
 		upsert,
 		delete: del,
-	} as EntityService<EntityIri, EntityBody, Entity, Options>;
+	} as EntityService<EntityIri, Entity, Options>;
 };
 
 export default entityServiceBuilder;

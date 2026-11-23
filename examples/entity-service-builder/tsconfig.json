@@ -1,6 +1,7 @@
 {
 	"compilerOptions": {
 		"strict": true,
+		"exactOptionalPropertyTypes": true,
 		"allowImportingTsExtensions": true,
 		"rewriteRelativeImportExtensions": true,
 		"verbatimModuleSyntax": true,
