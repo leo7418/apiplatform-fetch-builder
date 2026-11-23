@@ -1,12 +1,8 @@
 import fetchBuilder, { entityServiceBuilder } from "apiplatform-fetch-builder";
 
-import type { CompanyIri, CompanyBody, Company } from "./types/company.ts";
+import type { CompanyIri, Company } from "./types/company.ts";
 
-const companyServiceBuilder = entityServiceBuilder<
-	CompanyIri,
-	CompanyBody,
-	Company
->;
+const companyServiceBuilder = entityServiceBuilder<CompanyIri, Company>;
 
 const companiesService = companyServiceBuilder(
 	fetchBuilder("https://your-api.com"),
@@ -27,7 +23,7 @@ const companiesService = companyServiceBuilder(
 );
 */
 
-const companiesResult = await companiesService.getAll({
+const companies = await companiesService.getAll({
 	pagination: true,
 	pageIndex: 1,
 	pageSize: 10,
@@ -43,38 +39,57 @@ const companiesResult = await companiesService.getAll({
 	],
 });
 
-if (companiesResult.success) {
-	const companies = companiesResult.data["hydra:member"];
+console.log(companies.member);
 
-	console.log(companies);
-} else {
-	console.error(companiesResult.error);
-}
-
-const companyResult = await companiesService.get(1);
+const company = await companiesService.get(1);
 
 /* OR
-const companyResult = await companiesService.get("/companies/1");
+const company = await companiesService.get("/companies/1");
 */
 
-if (companyResult.success) {
-	const company = companyResult.data;
+console.log(company);
 
-	console.log(company);
-} else {
-	console.error(companyResult.error);
-}
+// Send an item back as it was read, with a change
+const renamed = await companiesService.update({ ...company, name: "Acme" });
+console.log(renamed.name);
+
+// Send back an item narrowed by a selection
+const narrowed = await companiesService.get(1, {
+	properties: ["name", "website"],
+});
+await companiesService.update(narrowed);
+
+// Identify an item by its IRI or by its id, whichever is known
+const known: { iri?: CompanyIri; id?: number } = { id: 1 };
+await companiesService.upsert({
+	"@id": known.iri,
+	id: known.id,
+	name: "Acme",
+});
+await companiesService.update({
+	"@id": company["@id"],
+	id: known.id,
+	ceo: { "@id": undefined, firstName: "Ada" },
+});
+
+// Create with the properties the API does not fill itself
+const created = await companiesService.create({
+	name: "Globex",
+	description: "Energy",
+	ceo: "/users/1",
+});
+console.log(created["@id"]);
 
 // Fetch all companies across all pages
 const allCompanies = await companiesService.getAllPages();
-console.log(`Fetched ${allCompanies["hydra:totalItems"]} companies`);
+console.log(`Fetched ${allCompanies.totalItems} companies`);
 
 // With filters and sorting
 const allActive = await companiesService.getAllPages({
 	sortBy: [{ id: "name", desc: false }],
 	pageSize: 50,
 });
-console.log(`Fetched ${allActive["hydra:totalItems"]} companies`);
+console.log(`Fetched ${allActive.totalItems} companies`);
 
 // With progress reporting — return false to stop early
 const partial = await companiesService.getAllPages(
@@ -86,11 +101,11 @@ const partial = await companiesService.getAllPages(
 		if (totalItems !== undefined && totalItems > 10000) return false;
 	},
 );
-console.log(`Fetched ${partial["hydra:totalItems"]} companies`);
+console.log(`Fetched ${partial.totalItems} companies`);
 
-// With both getOptions and onProgress
+// With both query and onProgress
 const filtered = await companiesService.getAllPages(
 	{ sortBy: [{ id: "name", desc: false }], pageSize: 100 },
 	({ progressPercent }) => console.log(`${progressPercent}%`),
 );
-console.log(`Fetched ${filtered["hydra:totalItems"]} companies`);
+console.log(`Fetched ${filtered.totalItems} companies`);

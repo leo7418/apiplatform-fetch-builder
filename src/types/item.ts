@@ -1,14 +1,17 @@
-import type { Iri } from "./iri.ts";
+import type { AnyIri } from "./iri.ts";
 
-type HydraItem<I extends Iri<string>> = {
-	"@context": string;
+type HydraNode<I extends AnyIri> = {
 	"@id": I;
 	"@type": string;
 };
 
-export type Item<T, I extends Iri<string>> = HydraItem<I> & T;
+type HydraItem<I extends AnyIri> = HydraNode<I> & { "@context": string };
+
+export type Item<T, I extends AnyIri> = HydraItem<I> & T;
+
+export type Embedded<T, I extends AnyIri> = HydraNode<I> & T;
 
 export type GetItem<I> =
-	I extends Item<infer T, infer U> ? Omit<T, keyof HydraItem<U>> : never;
+	I extends Embedded<infer T, infer U> ? Omit<T, keyof HydraItem<U>> : never;
 
 export type SafeGetItem<T> = GetItem<T> extends never ? T : GetItem<T>;

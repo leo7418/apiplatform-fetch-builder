@@ -1,39 +1,36 @@
-import type { GetCollectionItem, SafeGetCollectionItem } from "./collection.ts";
-import type { GetItem, SafeGetItem } from "./item.ts";
-import type { Simplify, Join, SecureType } from "./utils.ts";
+import type { SafeGetCollectionItem } from "./collection.ts";
+import type { IsAny, Leaf, SecureType, Simplify } from "./internal.ts";
+import type { SafeGetItem } from "./item.ts";
 
 type Prev = [never, 0, 1, 2, 3, 4, 5];
 
-type IsHydra<T> =
-	GetItem<T> extends never
-		? GetCollectionItem<T> extends never
-			? false
-			: true
-		: true;
+type Dotted<K, Path> = K extends string | number
+	? Path extends string | number
+		? `${K}.${Path}`
+		: never
+	: never;
 
-type HydraNestedKeyOfInner<T, Depth extends number, I> = [Depth] extends [never]
+type NestedPathOf<T, Depth extends number = 3> = [Depth] extends [never]
 	? never
-	: T extends object
-		? IsHydra<T> extends true
-			? {
-					[K in keyof I]-?:
-						| K
-						| (I[K] extends Array<infer U>
-								? Join<K, HydraNestedKeyOf<U, Prev[Depth]>>
-								: Join<K, HydraNestedKeyOf<I[K], Prev[Depth]>>);
-				}[keyof I]
-			: never
-		: never;
+	: IsAny<T> extends true
+		? never
+		: T extends Leaf
+			? never
+			: T extends readonly (infer U)[]
+				? NestedPathOf<U, Depth>
+				: T extends object
+					? {
+							[K in keyof SafeGetItem<T>]-?:
+								| K
+								| Dotted<K, NestedPathOf<SafeGetItem<T>[K], Prev[Depth]>>;
+						}[keyof SafeGetItem<T>]
+					: never;
 
-type HydraNestedKeyOf<T, Depth extends number = 3> = HydraNestedKeyOfInner<
-	T,
-	Depth,
-	SafeGetItem<T>
->;
-
-type SafeRoot<T> = T extends Array<infer U> ? U : SafeGetCollectionItem<T>;
+type SafeRoot<T> = T extends readonly (infer U)[]
+	? U
+	: SafeGetCollectionItem<T>;
 
 export type PropertyPath<T> = SecureType<
-	Simplify<HydraNestedKeyOf<SafeRoot<T>>>,
+	Simplify<NestedPathOf<SafeRoot<T>>>,
 	string
 >;

@@ -4,16 +4,13 @@ import type { UserIri, UserItem } from "./user.ts";
 
 type CompanyIri = Iri<"companies">;
 
-type CompanyBody = {
+type Company = {
+	readonly id: number;
 	name: string;
 	description: string;
-};
-
-type Company = CompanyBody & {
-	id: string;
 	ceo: UserItem | UserIri;
 	employees: (UserItem | UserIri)[];
-	stats: {
+	readonly stats: {
 		employeesCount: number;
 		averageAge: number;
 	};
@@ -22,10 +19,4 @@ type Company = CompanyBody & {
 type CompanyItem = Item<Company, CompanyIri>;
 type CompanyCollection = Collection<Company, CompanyIri>;
 
-export type {
-	CompanyIri,
-	CompanyBody,
-	Company,
-	CompanyItem,
-	CompanyCollection,
-};
+export type { CompanyIri, Company, CompanyItem, CompanyCollection };

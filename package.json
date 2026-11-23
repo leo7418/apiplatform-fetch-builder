@@ -1,7 +1,7 @@
 {
 	"name": "apiplatform-fetch-builder",
-	"version": "0.1.0",
-	"description": "A TypeScript library for making typed fetch requests to ApiPlatform and Hydra APIs, supporting pagination, sorting, filtering, and more.",
+	"version": "0.2.0",
+	"description": "A TypeScript client for API Platform and Hydra APIs: typed fetch requests with pagination, sorting, filtering and property selection, and typed CRUD services.",
 	"type": "module",
 	"repository": {
 		"type": "git",
@@ -13,9 +13,12 @@
 	"homepage": "https://github.com/leo7418/apiplatform-fetch-builder#readme",
 	"keywords": [
 		"api",
+		"api-platform",
 		"apiplatform",
 		"hydra",
+		"json-ld",
 		"fetch",
+		"client",
 		"typed",
 		"typescript"
 	],
@@ -25,8 +28,8 @@
 	"types": "./index.d.ts",
 	"exports": {
 		".": {
-			"import": "./index.js",
-			"types": "./index.d.ts"
+			"types": "./index.d.ts",
+			"import": "./index.js"
 		}
 	},
 	"sideEffects": false,
@@ -39,8 +42,12 @@
 		"build:setup": "mkdir -p dist && cp package.json dist && cp README.md dist && cp LICENSE dist",
 		"build:js": "tsc -p tsconfig.lib.json && find dist/types -type f ! -name '*.ts' -delete",
 		"build": "pnpm build:clean && pnpm build:setup && pnpm build:js",
-		"lint": "tsc --noEmit && eslint src",
-		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'"
+		"typecheck": "tsc --noEmit && tsc -p integration && pnpm build && tsc -p examples/basic && tsc -p examples/entity-service-builder && tsc -p examples/hydra-prefix",
+		"lint": "pnpm typecheck && eslint src integration/tests",
+		"lint:fix": "eslint src integration/tests --fix",
+		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'",
+		"test:compiled": "rm -rf .test-build && tsc --noEmit false --rootDir src --outDir .test-build && node --test .test-build/lib/*.test.js .test-build/types/*.test.js",
+		"test:integration": "integration/run.sh"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

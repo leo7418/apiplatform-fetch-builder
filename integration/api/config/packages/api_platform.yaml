@@ -1,0 +1,6 @@
+api_platform:
+  defaults:
+    pagination_client_items_per_page: true
+    extra_properties:
+      # The default since API Platform 4.0
+      standard_put: true

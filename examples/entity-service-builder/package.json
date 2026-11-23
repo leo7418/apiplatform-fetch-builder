@@ -1,5 +1,5 @@
 {
-  "name": "basic",
+  "name": "entity-service-builder",
   "version": "1.0.0",
   "description": "",
 	"type": "module",
@@ -11,6 +11,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "apiplatform-fetch-builder": "^0.0.7"
+    "apiplatform-fetch-builder": "link:../../dist"
   }
 }
