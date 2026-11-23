@@ -12,24 +12,29 @@ use ApiPlatform\Metadata\Post;
 use ApiPlatform\Metadata\Put;
 use ApiPlatform\Serializer\Filter\PropertyFilter;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Serializer\Attribute\Groups;
 use Symfony\Component\Validator\Constraints as Assert;
 
 // API Platform 4 and later only expose PUT when it is declared.
+// The collection is serialized with a group of its own, the item with every property.
 #[ORM\Entity]
-#[ApiResource(operations: [new GetCollection(), new Post(), new Get(), new Put(), new Patch(), new Delete()])]
+#[ApiResource(operations: [new GetCollection(normalizationContext: ['groups' => ['task:list']]), new Post(), new Get(), new Put(), new Patch(), new Delete()])]
 #[ApiFilter(PropertyFilter::class)]
 class Task
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
+    #[Groups(['task:list'])]
     private ?int $id = null;
 
     #[ORM\Column]
     #[Assert\NotBlank]
+    #[Groups(['task:list'])]
     public string $title = '';
 
     #[ORM\Column]
+    #[Groups(['task:list'])]
     public string $status = 'todo';
 
     #[ORM\Column(nullable: true)]

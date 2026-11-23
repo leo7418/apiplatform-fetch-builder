@@ -47,6 +47,8 @@ export type EntityServiceOptions = {
 	output?: false;
 	/** Body of the write operations, when it is not the one deduced from the entity. */
 	body?: object;
+	/** Model of the members of the collection, when the API serializes them differently from an item. */
+	collection?: object;
 };
 
 type Option<
@@ -71,8 +73,12 @@ type Collections<Entity, EntityIri extends AnyIri> = {
 	partial: PartialCollection<Entity, EntityIri>;
 };
 
+type Member<Entity, Options> = [Option<Options, "collection">] extends [never]
+	? Entity
+	: Option<Options, "collection">;
+
 type Listed<EntityIri extends AnyIri, Entity, Options> = Collections<
-	Entity,
+	Member<Entity, Options>,
 	EntityIri
 >[[Option<Options, "pagination">] extends [never] ? "full" : "partial"];
 
@@ -135,14 +141,16 @@ export type EntityService<
 			| ObjectWithId<PatchBodyOf<Entity, Options>, EntityIri, OwnId<Entity>>,
 	) => Promise<Written<EntityIri, Entity, Options>>;
 	getAllPages: {
-		(onProgress?: OnProgress): Promise<Collection<Entity, EntityIri>>;
+		(
+			onProgress?: OnProgress,
+		): Promise<Collection<Member<Entity, Options>, EntityIri>>;
 		(
 			query: Omit<
-				QueryOptions<Collection<Entity, EntityIri>, never[]>,
+				QueryOptions<Collection<Member<Entity, Options>, EntityIri>, never[]>,
 				"pagination" | "pageIndex"
 			>,
 			onProgress?: OnProgress,
-		): Promise<Collection<Entity, EntityIri>>;
+		): Promise<Collection<Member<Entity, Options>, EntityIri>>;
 	};
 	delete: (idOrIri: EntityIri | IriId<EntityIri>) => Promise<null>;
 };

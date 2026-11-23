@@ -1,0 +1,12 @@
+{
+	"extends": "./tsconfig.lib.json",
+	"compilerOptions": {
+		"declaration": false,
+		"isolatedDeclarations": false,
+		"sourceMap": false,
+		"inlineSources": false,
+		"types": ["node"]
+	},
+	"include": ["src/cli/main.ts"],
+	"exclude": []
+}

@@ -42,7 +42,11 @@ export type Collection<T, I extends AnyIri = Iri<string>> = PartialCollection<
 	HydraKeys<{ totalItems: number }>;
 
 export type GetCollectionItem<C> =
-	C extends PartialCollection<infer T, infer I> ? Item<T, I> : never;
+	C extends PartialCollection<unknown, AnyIri>
+		? C extends HydraKeys<{ member: (infer M extends { "@id": AnyIri })[] }>
+			? Item<M, M["@id"]>
+			: never
+		: never;
 
 export type SafeGetCollectionItem<T> =
 	GetCollectionItem<T> extends never ? T : GetCollectionItem<T>;

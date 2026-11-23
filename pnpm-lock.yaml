@@ -45,6 +45,12 @@ importers:
         specifier: link:../../dist
         version: link:../../dist
 
+  examples/generated:
+    dependencies:
+      apiplatform-fetch-builder:
+        specifier: link:../../dist
+        version: link:../../dist
+
   examples/hydra-prefix:
     dependencies:
       apiplatform-fetch-builder:

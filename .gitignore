@@ -4,3 +4,4 @@ node_modules
 /integration/api/var
 /integration/api/vendor
 /.test-build
+/integration/api/composer.lock

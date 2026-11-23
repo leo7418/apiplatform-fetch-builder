@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import type { Collection, GetAllPagesProgress } from "../../src/index.ts";
 
-import { api, hydraPrefix, unprefixed, users } from "./api.ts";
+import { api, hydraPrefix, tasks, unprefixed, users } from "./api.ts";
 import type { User, UserIri } from "./api.ts";
 
 const names = (members: { name: string }[]) => members.map(({ name }) => name);
@@ -47,6 +47,23 @@ describe("reading a collection", () => {
 		);
 
 		assert.equal(page.totalItems, 8);
+	});
+
+	test("should list a collection in the serialization of its own", async () => {
+		const { id } = await tasks.create({ title: "Listed", note: "Not listed" });
+
+		const { member } = unprefixed(await tasks.getAllPages());
+
+		assert.deepEqual(
+			member.find((task) => task.id === id),
+			{
+				"@id": `/api/tasks/${id}`,
+				"@type": "Task",
+				id,
+				title: "Listed",
+				status: "todo",
+			},
+		);
 	});
 
 	test("should select the properties of a collection", async () => {

@@ -32,6 +32,7 @@
 - [`entityServiceBuilder`](#entityservicebuilder)
   - [Model of a resource](#model-of-a-resource)
   - [`entityServiceBuilder` initialization](#entityservicebuilder-initialization)
+- [Generating the models](#generating-the-models)
 - [API reference](#api-reference)
 - [Recipes](#recipes)
 - [Contributing](#contributing)
@@ -358,6 +359,74 @@ entityServiceBuilder("https://api.example.com", "/users")
 entityServiceBuilder({ entrypoint: "https://api.example.com", config }, "/users")
 ```
 
+## Generating the models
+
+The models can be written from the documentation of the API instead of by hand:
+
+```bash
+npx apiplatform-fetch-builder generate https://api.example.com/api src
+```
+
+The command reads the OpenAPI and the Hydra documentation of a running API and writes `src/api-types.ts`, or the file itself when the output ends with `.ts`. For each resource, it writes the IRI type and the model that `entityServiceBuilder<UserIri, User>` expects:
+
+| In the documentation | In the model |
+|----------------------|--------------|
+| A property that is read-only, or that none of the write operations accepts | `readonly` |
+| A nullable property | Optional: `note?: string`, or `note: string \| null` with `--keep-null-values` |
+| A relation returned as an IRI | `CompanyIri`, or `Company \| CompanyIri` when the resource declares the property filter and has no serialization groups: the filter then embeds the relation once one of its properties is selected |
+| A relation that the serialization groups embed | `Embedded<{ name: string }, CompanyIri>`, with the embedded properties |
+| An enumeration | The union of its values |
+| A property that is only written, such as a password | Not in the model: a `UserBody` type is written next to it, for the `body` option of the service |
+| A route that returns a resource in another serialization than its item, such as a collection with groups of its own | A model named after the resource and the groups of that serialization, such as `UserList` for `user:list`, with the routes that return it in its comment |
+| An object that is not a resource: a DTO, what a custom operation takes or returns | A plain type under its own name, such as `TaskStats`, without an IRI |
+
+```ts
+export type UserBody = WriteBody<User> & {
+  plainPassword?: string;
+};
+
+/** Returned by GET /api/users. */
+export type UserList = {
+  readonly id: number;
+  name: string;
+};
+
+const users = entityServiceBuilder<UserIri, User, { body: UserBody; collection: UserList }>(api, "/users");
+```
+
+The model of a resource is the one of its item. The other serializations are told apart by their content, so two routes that return the same properties share a model, and a model whose serialization has no group is named `UserFull`.
+
+The input can also be an OpenAPI file, exported with `bin/console api:openapi:export`. That document does not say which resource a relation points to, so a relation returned as an IRI is then typed `AnyIri`, unless the Hydra documentation (`/docs.jsonld`) is given too:
+
+```bash
+npx apiplatform-fetch-builder generate openapi.json src --hydra docs.jsonld
+```
+
+A few things depend on what the API documents:
+
+- A resource that is only reachable under another one is written with the path of its parent in its IRI, such as ``Iri<`companies/${string}/employees`>``. A sub-resource whose resource also has a path of its own needs nothing more than the model of that resource.
+- A model describes a resource as its own routes return it. Reached through a relation of another resource, it can be serialized differently: with `properties: ["assignee.company"]` on a task, `company` comes as an IRI even when the model of `User` declares it embedded.
+- A resource named like a type of this library, such as `Embedded`, keeps its name: the generated file then imports the type of the library as `ApiEmbedded`.
+- An array is typed `unknown[]` when the documentation does not give the type of its items. API Platform 4.4 and 5.0 only read it from the PHP doc comments (`@var string[]`) when the API has both `phpstan/phpdoc-parser` and `phpdocumentor/reflection-docblock` installed.
+
+The command writes what the API documents. To correct a type, such as the content of a JSON column, declare it on the API with `#[ApiProperty(schema: […])]` and generate again, rather than editing the file: exclude it from Prettier and ESLint, which would rewrite it.
+
+API Platform leaves the null values out of its responses, hence the optional properties. For an API that sets `skip_null_values` to `false` and returns them, `--keep-null-values` writes every nullable property as `note: string | null`:
+
+```bash
+npx apiplatform-fetch-builder generate https://api.example.com/api src --keep-null-values
+```
+
+A documentation behind authentication is read with `--header`, which can be repeated:
+
+```bash
+npx apiplatform-fetch-builder generate https://api.example.com/api src --header "Authorization: Bearer <token>"
+```
+
+A local API served with a self-signed certificate is refused by Node unless `NODE_EXTRA_CA_CERTS` gives it the certificate of the local authority. The file mode avoids the question, with the two documents downloaded first from `/docs` (`Accept: application/vnd.openapi+json` and `Accept: application/ld+json`).
+
+[examples/generated](./examples/generated) shows a generated file and its use.
+
 ## API reference
 
 ### `fetchBuilder(entrypoint, config?)`
@@ -436,10 +505,11 @@ controller.abort(); // `pending` rejects with an AbortError
 
 Only the options that are set are sent; the API defaults apply to the others.
 
-Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, the third type argument describes the resource: `{ pagination: "partial" }` types `getAll()` as a `PartialCollection`, and `{ output: false }` types `create`, `update`, `replace` and `upsert` as resolving with `null`, for a resource whose writes return no content.
+Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, the third type argument describes the resource: `{ pagination: "partial" }` types `getAll()` as a `PartialCollection`, `{ output: false }` types `create`, `update`, `replace` and `upsert` as resolving with `null`, for a resource whose writes return no content, and `{ collection: UserList }` types the members of `getAll()` and `getAllPages()` with a model of their own, for a collection the API serializes with other groups than an item.
 
 ```ts
 const logs = entityServiceBuilder<LogIri, Log, { pagination: "partial" }>(api, "/logs");
+const users = entityServiceBuilder<UserIri, User, { collection: UserList }>(api, "/users");
 ```
 
 `properties` narrows the type of the response, whether it is typed as an `Item`, a `Collection`, a plain object or an array of them, and the way a relation is declared tells how the API serializes it:
@@ -520,11 +590,10 @@ pnpm lint   # type check, build, examples, ESLint
 pnpm test
 ```
 
-`pnpm test:compiled` runs the same tests compiled to JavaScript, which is what CI does on Node.js 18, 20, 22 and 24. `pnpm test:integration` runs the integration tests against the API Platform application of [integration/](./integration), which CI does for API Platform 3.4, 4.4 and 5.0. It needs PHP 8.4 or later and Composer, and the version is chosen first:
+`pnpm test:compiled` runs the same tests compiled to JavaScript, which is what CI does on Node.js 18, 20, 22 and 24. `pnpm test:integration` runs the integration tests against the API Platform application of [integration/](./integration), which CI does for API Platform 3.4, 4.4 and 5.0. It needs PHP 8.4 or later and Composer. Given a version, it installs that version first, from its lock file:
 
 ```bash
-composer update --working-dir=integration/api --with "api-platform/core:~5.0.0"
-pnpm test:integration
+pnpm test:integration 5.0   # or 3.4, 4.4; without a version, the one already installed
 ```
 
 ## License

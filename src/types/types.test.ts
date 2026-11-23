@@ -803,6 +803,33 @@ describe("types", () => {
 		assert.deepEqual([created, updated], [null, null]);
 	});
 
+	test("a service should list its collection in the serialization it is given", async () => {
+		respond({ member: [], totalItems: 0 });
+		type Listed = { readonly id: number; name: string };
+		const users = entityServiceBuilder<UserIri, User, { collection: Listed }>(
+			api,
+			"/users",
+		);
+
+		const page = await users.getAll();
+		const selected = await users.getAll({ properties: ["name"] });
+		const all = await users.getAllPages({ pageSize: 10 });
+		const checks: [
+			Equal<(typeof page)["member"][number]["name"], string>,
+			"email" extends keyof (typeof page)["member"][number] ? false : true,
+			"id" extends keyof (typeof selected)["member"][number] ? false : true,
+			"email" extends keyof (typeof all)["member"][number] ? false : true,
+		] = [true, true, true, true];
+		const email: string = (await users.get(1)).email;
+		// @ts-expect-error the collection does not return the email
+		await users.getAll({ properties: ["email"] });
+		await users.create({ name: "Alice", email: "alice@example.com" });
+
+		assert.ok(checks.every(Boolean));
+		assert.deepEqual([page.member, selected.member, all.member], [[], [], []]);
+		assert.equal(email, undefined);
+	});
+
 	test("an option of the service should count when its key is optional", async () => {
 		global.fetch = async () => new Response(null, { status: 204 });
 		const settings = entityServiceBuilder<

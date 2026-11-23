@@ -25,6 +25,9 @@ export type Simplify<T> = T extends Leaf
 		? { [K in keyof T]: Simplify<T[K]> }
 		: T;
 
+// "& {}" makes editors show the properties instead of the name of the alias
+export type Merged<T> = { [K in keyof T]: T[K] } & {};
+
 export type IsEmptyObject<T> = keyof T extends never ? true : false;
 
 export type UnionToIntersection<U> = (
