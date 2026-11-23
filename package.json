@@ -1,6 +1,6 @@
 {
 	"name": "apiplatform-fetch-builder",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "A TypeScript client for API Platform and Hydra APIs: typed fetch requests with pagination, sorting, filtering and property selection, and typed CRUD services.",
 	"type": "module",
 	"repository": {
