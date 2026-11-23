@@ -10,10 +10,12 @@ type SentKey<T, K extends keyof T> = K extends `@${string}`
 
 type IsNullable<V> = undefined extends V ? true : null extends V ? true : false;
 
+type Keyword<K> = K extends "@id" ? never : K extends `@${string}` ? K : never;
+
 type Relation<T, Whole, I> =
 	| I
 	| { "@id": I; "@type"?: string }
-	| (Fields<T, Whole> & { "@id"?: I | undefined });
+	| (Fields<T, Whole, true> & { "@id"?: I | undefined });
 
 type SentValue<T, Whole, Declared> = T extends Leaf
 	? T
@@ -28,7 +30,7 @@ type SentValue<T, Whole, Declared> = T extends Leaf
 					?
 							| AnyIri
 							| { "@id": AnyIri; "@type"?: string }
-							| (Fields<T, Whole> & object)
+							| (Fields<T, Whole, true> & object)
 					: Relation<T, Whole, Declared>
 				: T;
 
@@ -42,7 +44,7 @@ type Written<V, Whole> = unknown extends V
 
 type Flatten<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
 
-type Fields<T, Whole> = Flatten<
+type Fields<T, Whole, Nested> = Flatten<
 	{
 		[K in keyof T as [Whole, IsNullable<T[K]>] extends [true, false]
 			? SentKey<T, K>
@@ -51,6 +53,10 @@ type Fields<T, Whole> = Flatten<
 		[K in keyof T as [Whole, IsNullable<T[K]>] extends [true, false]
 			? never
 			: SentKey<T, K>]?: Written<T[K], Whole> | undefined;
+	} & {
+		[K in keyof T as Nested extends true ? Keyword<K> : never]?:
+			| T[K]
+			| undefined;
 	}
 >;
 
@@ -58,12 +64,12 @@ type Fields<T, Whole> = Flatten<
 export type WriteBody<T> = T extends readonly (infer U)[]
 	? readonly WriteBody<U>[]
 	: T extends unknown
-		? Fields<T, false>
+		? Fields<T, false, false>
 		: never;
 
 /** Body of a `PUT`: a `WriteBody` where every property that is not nullable is required. */
 export type ReplaceBody<T> = T extends readonly (infer U)[]
 	? readonly ReplaceBody<U>[]
 	: T extends unknown
-		? Fields<T, true>
+		? Fields<T, true, false>
 		: never;

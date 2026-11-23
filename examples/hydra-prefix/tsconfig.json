@@ -1,8 +1,8 @@
 {
 	"compilerOptions": {
 		"strict": true,
+		"types": [],
 		"allowImportingTsExtensions": true,
-		"rewriteRelativeImportExtensions": true,
 		"verbatimModuleSyntax": true,
 		"target": "esnext",
 		"module": "NodeNext",

@@ -29,3 +29,78 @@ jobs:
       - run: pnpm test
 
       - run: pnpm build
+
+  node:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18.x", "20.x", "22.x", "24.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: "pnpm"
+
+      - run: pnpm install
+
+      - run: pnpm test:compiled
+
+  typescript:
+    name: TypeScript ${{ matrix.typescript }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        typescript: ["5.0", "5.4", "5.9"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "pnpm"
+
+      - run: pnpm install
+
+      - run: pnpm build
+
+      - run: npx -y -p typescript@${{ matrix.typescript }} tsc -p examples/entity-service-builder
+
+      - run: npx -y -p typescript@${{ matrix.typescript }} tsc -p examples/hydra-prefix
+
+  integration:
+    name: API Platform ${{ matrix.api-platform }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        api-platform: ["3.4", "4.4", "5.0"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - run: composer update --working-dir=integration/api --with "api-platform/core:~${{ matrix.api-platform }}.0" --no-interaction --no-progress
+
+      - run: integration/run.sh

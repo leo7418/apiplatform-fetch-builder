@@ -1,7 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import entityServiceBuilder from "../lib/entity-service-builder.ts";
+import entityServiceBuilder, {
+	type EntityService,
+} from "../lib/entity-service-builder.ts";
 import fetchBuilder from "../lib/fetch-builder.ts";
 import type { ReplaceBody, WriteBody } from "./body.ts";
 import type { Collection, PartialCollection } from "./collection.ts";
@@ -725,6 +727,41 @@ describe("types", () => {
 		assert.ok(check);
 		assert.equal(radius, 2);
 		assert.deepEqual(kinds, ["circle"]);
+	});
+
+	test("a JSON-LD document typed with its keywords should be written in place", async () => {
+		type Page = {
+			title: string;
+			schema: { "@context": string; "@type": string; name: string };
+		};
+		respond({ "@id": "/api/pages/1", "@type": "Page", title: "a" });
+		const pages = entityServiceBuilder<Iri<"api/pages">, Page>(api, "/pages");
+
+		await pages.update(1, {
+			schema: {
+				"@context": "https://schema.org",
+				"@type": "Person",
+				name: "A",
+			},
+		});
+		// @ts-expect-error the keywords of the item itself are not part of its body
+		await pages.update(1, { "@type": "Page", title: "b" });
+	});
+
+	test("generic code should take its bodies from the type of the service", async () => {
+		const patch = <I extends AnyIri, T extends object>(
+			service: EntityService<I, T>,
+			id: IriId<I>,
+			body: Parameters<EntityService<I, T>["update"]>[1],
+		) => service.update(id, body);
+		respond({ "@id": "/api/users/1", "@type": "User", name: "Bob" });
+		const users = entityServiceBuilder<UserIri, User>(api, "/users");
+
+		const updated = await patch(users, 1, { name: "Bob" });
+		// @ts-expect-error the body is still the one of the resource
+		await patch(users, 1, { missing: true });
+
+		assert.equal(updated.name, "Bob");
 	});
 
 	test("the body of a union should keep the properties of each member", () => {

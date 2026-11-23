@@ -4,7 +4,6 @@
 		"lib": ["es2022"],
 		"types": ["node"],
 		"allowImportingTsExtensions": true,
-		"rewriteRelativeImportExtensions": true,
 		"verbatimModuleSyntax": true,
 		"target": "esnext",
 		"module": "NodeNext",

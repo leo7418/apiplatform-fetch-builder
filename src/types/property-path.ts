@@ -1,7 +1,6 @@
 import type { SafeGetCollectionItem } from "./collection.ts";
-import type { IsAny, Leaf } from "./internal.ts";
+import type { IsAny, Leaf, SecureType, Simplify } from "./internal.ts";
 import type { SafeGetItem } from "./item.ts";
-import type { Simplify, SecureType } from "./utils.ts";
 
 type Prev = [never, 0, 1, 2, 3, 4, 5];
 

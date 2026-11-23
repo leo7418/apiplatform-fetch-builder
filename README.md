@@ -494,6 +494,22 @@ users.member[0].name; // string
 users.member[0].email; // compile error: not selected
 ```
 
+### Wrapping a service in generic code
+
+Inside a function that is generic over the model, the bodies deduced from it are not resolved yet, so a `WriteBody<T>` cannot be passed to `update`, `replace` or `upsert`. Take the parameters from the type of the service instead:
+
+```ts
+import type { AnyIri, EntityService, IriId } from "apiplatform-fetch-builder";
+
+const patch = <I extends AnyIri, T extends object>(
+  service: EntityService<I, T>,
+  id: IriId<I>,
+  body: Parameters<EntityService<I, T>["update"]>[1],
+) => service.update(id, body);
+
+await patch(userService, 1, { name: "Bob" });
+```
+
 ## Contributing
 
 Bugs and ideas go to the [issue tracker](https://github.com/leo7418/apiplatform-fetch-builder/issues). To work on the library, use pnpm and Node.js 22.6 or later, since the tests run the TypeScript files directly:
@@ -502,6 +518,13 @@ Bugs and ideas go to the [issue tracker](https://github.com/leo7418/apiplatform-
 pnpm install
 pnpm lint   # type check, build, examples, ESLint
 pnpm test
+```
+
+`pnpm test:compiled` runs the same tests compiled to JavaScript, which is what CI does on Node.js 18, 20, 22 and 24. `pnpm test:integration` runs the integration tests against the API Platform application of [integration/](./integration), which CI does for API Platform 3.4, 4.4 and 5.0. It needs PHP 8.4 or later and Composer, and the version is chosen first:
+
+```bash
+composer update --working-dir=integration/api --with "api-platform/core:~5.0.0"
+pnpm test:integration
 ```
 
 ## License

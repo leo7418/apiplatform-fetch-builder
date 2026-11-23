@@ -1,15 +1,14 @@
 import fetchBuilder from "./lib/fetch-builder.ts";
 import entityServiceBuilder from "./lib/entity-service-builder.ts";
 import { ApiError, isHydraError } from "./lib/api-error.ts";
-export type * from "./types/body.ts";
-export type * from "./types/collection.ts";
-export type * from "./types/error.ts";
-export type * from "./types/item.ts";
-export type * from "./types/iri.ts";
-export type * from "./types/property-path.ts";
-export type * from "./types/property-value.ts";
-export type * from "./types/register.ts";
-export type * from "./types/utils.ts";
+export type { ReplaceBody, WriteBody } from "./types/body.ts";
+export type { Collection, PartialCollection } from "./types/collection.ts";
+export type { HydraError } from "./types/error.ts";
+export type { Embedded, Item } from "./types/item.ts";
+export type { AbsoluteIri, AnyIri, Iri, IriId } from "./types/iri.ts";
+export type { PropertyPath } from "./types/property-path.ts";
+export type { PropertyValue } from "./types/property-value.ts";
+export type { Register } from "./types/register.ts";
 export type {
 	BodyBuilder,
 	BuilderConfig,

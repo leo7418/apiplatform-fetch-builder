@@ -1,6 +1,5 @@
 import type { GetIri } from "./iri.ts";
 import type { Embedded, Item } from "./item.ts";
-import type { IsAny, Leaf } from "./internal.ts";
 import type { PropertyPath } from "./property-path.ts";
 import type {
 	Collection,
@@ -9,12 +8,14 @@ import type {
 } from "./collection.ts";
 import type {
 	Head,
+	IsAny,
 	IsEmptyObject,
+	Leaf,
 	SecureType,
 	Simplify,
 	Tail,
 	UnionToIntersection,
-} from "./utils.ts";
+} from "./internal.ts";
 
 type NonEmptyObject<T> = T extends Leaf
 	? never

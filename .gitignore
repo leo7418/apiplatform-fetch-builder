@@ -1,2 +1,6 @@
 node_modules
 /dist
+/integration/api/config/reference.php
+/integration/api/var
+/integration/api/vendor
+/.test-build

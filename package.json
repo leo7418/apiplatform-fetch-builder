@@ -42,10 +42,12 @@
 		"build:setup": "mkdir -p dist && cp package.json dist && cp README.md dist && cp LICENSE dist",
 		"build:js": "tsc -p tsconfig.lib.json && find dist/types -type f ! -name '*.ts' -delete",
 		"build": "pnpm build:clean && pnpm build:setup && pnpm build:js",
-		"typecheck": "tsc --noEmit && pnpm build && tsc -p examples/basic && tsc -p examples/entity-service-builder && tsc -p examples/hydra-prefix",
-		"lint": "pnpm typecheck && eslint src",
-		"lint:fix": "eslint src --fix",
-		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'"
+		"typecheck": "tsc --noEmit && tsc -p integration && pnpm build && tsc -p examples/basic && tsc -p examples/entity-service-builder && tsc -p examples/hydra-prefix",
+		"lint": "pnpm typecheck && eslint src integration/tests",
+		"lint:fix": "eslint src integration/tests --fix",
+		"test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test './src/**/*.test.ts'",
+		"test:compiled": "rm -rf .test-build && tsc --noEmit false --rootDir src --outDir .test-build && node --test .test-build/lib/*.test.js .test-build/types/*.test.js",
+		"test:integration": "integration/run.sh"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

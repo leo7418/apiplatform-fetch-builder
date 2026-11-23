@@ -1,9 +1,9 @@
 {
 	"compilerOptions": {
 		"strict": true,
+		"types": [],
 		"exactOptionalPropertyTypes": true,
 		"allowImportingTsExtensions": true,
-		"rewriteRelativeImportExtensions": true,
 		"verbatimModuleSyntax": true,
 		"target": "esnext",
 		"module": "NodeNext",
