@@ -9,6 +9,7 @@ type Schema = {
 	items?: Schema;
 	properties?: Record<string, Schema>;
 	additionalProperties?: Schema | boolean;
+	required?: string[];
 	readOnly?: boolean;
 	writeOnly?: boolean;
 	nullable?: boolean;
@@ -22,7 +23,9 @@ type Operation = {
 	responses?: Record<string, Content>;
 };
 
-type PathItem = Partial<Record<"get" | "post" | "put" | "patch", Operation>>;
+type PathItem = Partial<
+	Record<"get" | "post" | "put" | "patch" | "delete", Operation>
+>;
 
 export type OpenApiDocument = {
 	servers?: { url?: string }[];
@@ -32,14 +35,18 @@ export type OpenApiDocument = {
 
 export type HydraDocument = Record<string, unknown>;
 
-type Resource = {
-	name: string;
+type Route = {
 	path: string;
+	item?: string;
+	collection: string;
 	identifier: string;
 	read: Schema;
 	writes: Schema[];
 	selectable: boolean;
+	output: boolean;
 };
+
+type Resource = Route & { name: string; routes: Route[] };
 
 type Variant = { resource: Resource; schema: Schema; routes: string[] };
 
@@ -53,6 +60,9 @@ type Context = {
 	keepNullValues: boolean;
 	selectable: boolean;
 	stack: string[];
+	names: Map<string, string>;
+	self?: string;
+	sent?: "partial" | "required" | "typed";
 };
 
 const ITEM_PATH = /^\/(.+)\/\{([^/{}]+)\}$/;
@@ -84,23 +94,51 @@ const WORDS = /[A-Z]?[a-z\d]+|[A-Z]+(?![a-z])/g;
 
 const baseName = (name: string | undefined) => name?.match(/^[^.-]+/)?.[0];
 
-const groupsOf = (schema: Schema) =>
-	schemaName(schema)?.replace(/^[^-]*-?/, "") ?? "";
+const isLinked = (name: string | undefined) =>
+	(name ?? "").replace(/-.*$/, "").split(".").includes("jsonld");
 
-const variantName = (resource: string, groups: string) => {
+const twinOf = (name: string, aliases: Map<string, string>) =>
+	name.replace(/^[^.-]+/, (base) => aliases.get(base) ?? base);
+
+const isSame = (name: string, other: string, context: Context) =>
+	name === other ||
+	(twinOf(name, context.aliases) === twinOf(other, context.aliases) &&
+		Object.keys(propertiesOf(context.schemas[name], context)).join() ===
+			Object.keys(propertiesOf(context.schemas[other], context)).join());
+
+const groupsOf = (schema: Schema) =>
+	schemaName(schema)
+		?.replace(/^[^-]*-?/, "")
+		.replace(/(^|_)validation\..*$|\.jsonMergePatch$/, "") ?? "";
+
+const variantName = (resource: Resource, groups: string) => {
 	const words = (groups.match(WORDS) ?? []).join("_");
-	const own = new RegExp(
-		`(^|_)${(resource.match(WORDS) ?? []).join("_")}(?=_|$)`,
-		"gi",
+	const own = resource.name.match(WORDS) ?? [];
+	const spellings = [
+		resource.collection.split("/").pop()?.match(WORDS) ?? [],
+		...own.map((_, index) => own.slice(index)),
+	]
+		.filter((spelling) => spelling.length)
+		.map((spelling) => spelling.join("_?"));
+	const others = words.replace(
+		new RegExp(`(^|_)(?:${spellings.join("|")})s?(?=_|$)`, "gi"),
+		"$1",
 	);
-	const suffix = [words.replace(own, "$1"), words, "full"]
+	const suffix = [others, words, "full"]
 		.map((text) =>
-			text.replace(/(?:^|_)+(.?)/g, (_, initial: string) =>
-				initial.toUpperCase(),
-			),
+			text
+				.split("_")
+				.filter(
+					(word, index, all) =>
+						all.findIndex(
+							(other) => other.toLowerCase() === word.toLowerCase(),
+						) === index,
+				)
+				.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+				.join(""),
 		)
 		.find(Boolean);
-	return `${resource}${suffix}`;
+	return `${resource.name}${suffix}`;
 };
 
 const resourceName = (
@@ -122,12 +160,19 @@ const hydra = (node: unknown, key: string): unknown =>
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-const readTargets = (document: HydraDocument | undefined) => {
+const readTargets = (
+	document: HydraDocument | undefined,
+	aliases: Map<string, string>,
+) => {
 	const classes = list(hydra(document, "supportedClass"));
+	const titleOf = (item: unknown) => {
+		const title = String(hydra(item, "title"));
+		return aliases.get(title) ?? title;
+	};
 	const titles = new Map(
-		classes.map((item) => [hydra(item, "@id"), String(hydra(item, "title"))]),
+		classes.map((item) => [hydra(item, "@id"), titleOf(item)]),
 	);
-	const ids = classes.map((item) => hydra(item, "@id"));
+	const ids = [...new Set(classes.map((item) => hydra(item, "@id")))];
 	const targets = new Map<string, string>();
 	classes.forEach((item) =>
 		list(hydra(item, "supportedProperty")).forEach((supported) => {
@@ -140,10 +185,7 @@ const readTargets = (document: HydraDocument | undefined) => {
 			);
 			const target = others.length ? undefined : titles.get(id);
 			if (target) {
-				targets.set(
-					`${hydra(item, "title")}.${hydra(supported, "title")}`,
-					target,
-				);
+				targets.set(`${titleOf(item)}.${hydra(supported, "title")}`, target);
 			}
 		}),
 	);
@@ -151,7 +193,7 @@ const readTargets = (document: HydraDocument | undefined) => {
 };
 
 const isSelectable = (operation: Operation | undefined, read: Schema) =>
-	!schemaName(read)?.includes("-") &&
+	!groupsOf(read) &&
 	(operation?.parameters ?? []).some(({ name }) => name === "properties[]");
 
 const writesOf = (operations: (Operation | undefined)[]) =>
@@ -167,46 +209,82 @@ const readResources = (
 	document: OpenApiDocument,
 	aliases: Map<string, string>,
 ) => {
-	const base = new URL(
-		document.servers?.[0]?.url ?? "/",
-		"http://localhost",
-	).pathname.replace(/\/+$/, "");
+	const url = document.servers?.[0]?.url;
+	const server = (typeof url === "string" ? url : "")
+		.replace(/^(?:[a-z][a-z\d+.-]*:)?\/\/[^/]*/i, "")
+		.replace(/^\/*|[?#].*$|\/+$/g, "");
+	const base = server && !server.includes("{") ? `/${server}` : "";
 	const resources = new Map<string, Resource>();
 	const paths = Object.entries(document.paths ?? {});
-	const nested = ([path]: [string, PathItem]) => path.split("{").length > 2;
-	[...paths.filter((entry) => !nested(entry)), ...paths.filter(nested)].forEach(
-		([path, item]) => {
-			const [, prefix, identifier] = ITEM_PATH.exec(path) ?? [];
-			const read = schemaOf(item.get?.responses?.["200"]);
-			const name = resourceName(schemaName(read), aliases);
-			if (!prefix || !identifier || !read || !name || resources.has(name)) {
-				return;
-			}
-			const collection = document.paths?.[`/${prefix}`];
-			resources.set(name, {
+	const hasOutput = (writing: (Operation | undefined)[]) =>
+		!writing.some((operation) => operation?.responses?.["204"]) ||
+		writing.some(
+			(operation) =>
+				schemaOf(operation?.responses?.["200"]) ??
+				schemaOf(operation?.responses?.["201"]),
+		);
+	const items = paths.flatMap(([path, item]): (Route & { name: string })[] => {
+		const [, prefix, identifier] = ITEM_PATH.exec(path) ?? [];
+		const read = schemaOf(item.get?.responses?.["200"]);
+		const name = resourceName(schemaName(read), aliases);
+		if (!prefix || !identifier || !read || !name) {
+			return [];
+		}
+		const collection = document.paths?.[`/${prefix}`];
+		const writing = [collection?.post, item.put, item.patch];
+		return [
+			{
 				name,
 				path: `${base}/${prefix}`.slice(1),
+				item: path,
+				collection: `/${prefix}`,
 				identifier,
 				read,
-				writes: writesOf([collection?.post, item.put, item.patch]),
+				writes: writesOf(writing),
 				selectable: isSelectable(collection?.get, read),
-			});
-		},
+				output: hasOutput(writing),
+			},
+		];
+	});
+	const rank = ({ path, writes }: Route) => [
+		path.split("{").length,
+		path.split("/").length,
+		writes.length ? 0 : 1,
+	];
+	const ranked = [...items].sort(
+		(a, b) =>
+			rank(a)
+				.map((value, index) => value - rank(b)[index])
+				.find(Boolean) ?? 0,
 	);
+	ranked.forEach((item) => {
+		if (!resources.has(item.name)) {
+			resources.set(item.name, {
+				...item,
+				routes: ranked.filter(({ name }) => name === item.name),
+			});
+		}
+	});
 	paths.forEach(([path, item]) => {
 		const read =
 			membersOf(schemaOf(item.get?.responses?.["200"])) ??
 			schemaOf(item.post?.responses?.["201"]);
 		const name = resourceName(schemaName(read), aliases);
 		if (read && name && !resources.has(name)) {
-			resources.set(name, {
-				name,
+			const [, one] =
+				paths.find(([other]) => `/${ITEM_PATH.exec(other)?.[1]}` === path) ??
+				[];
+			const writing = [item.post, one?.put, one?.patch];
+			const route = {
 				path: `${base}${path}`.slice(1),
+				collection: path,
 				identifier: "id",
 				read,
-				writes: writesOf([item.post]),
+				writes: writesOf(writing),
 				selectable: isSelectable(item.get, read),
-			});
+				output: hasOutput(writing),
+			};
+			resources.set(name, { ...route, name, routes: [route] });
 		}
 	});
 	return resources;
@@ -255,8 +333,7 @@ const objectType = (
 			const readOnly =
 				schema.readOnly || (written && !Object.hasOwn(written, name));
 			const nullable = isNullable(schema);
-			const kept = nullable && context.keepNullValues;
-			return `${readOnly ? "readonly " : ""}${key(name)}${nullable && !kept ? "?" : ""}: ${typeOf(schema, owner, name, context)}${kept ? " | null" : ""};`;
+			return `${readOnly ? "readonly " : ""}${key(name)}${nullable ? "?" : ""}: ${typeOf(schema, owner, name, context)}${nullable && context.keepNullValues ? " | null" : ""};`;
 		});
 	return lines.length ? `{\n\t${indent(lines.join("\n"))}\n}` : "{}";
 };
@@ -283,16 +360,38 @@ const typeOf = (
 		}
 		const target = resourceName(name, context.aliases) ?? name;
 		const known = context.resources.has(target);
-		if (context.stack.includes(name)) {
-			return known
-				? `${lib(context, "Embedded")}<${target}, ${iriOf(target)}>`
-				: "{ [key: string]: unknown }";
+		const open = context.stack.some((other) => isSame(other, name, context));
+		if (context.sent) {
+			const sent = open
+				? "{ [key: string]: unknown }"
+				: sentObject(
+						target,
+						Object.entries(propertiesOf(schema, context)),
+						requiredOf(schema, context),
+						{ ...context, stack: [...context.stack, name] },
+					);
+			return !known
+				? sent
+				: open
+					? iriOf(target)
+					: `${iriOf(target)} | ${sent}`;
+		}
+		if (open) {
+			const model =
+				context.self && isSame(context.stack[0] ?? "", name, context)
+					? context.self
+					: ([...context.names].find(([other]) =>
+							isSame(other, name, context),
+						)?.[1] ?? "{ [key: string]: unknown }");
+			return known && isLinked(name)
+				? `${lib(context, "Embedded")}<${model}, ${iriOf(target)}>`
+				: model;
 		}
 		const body = objectType(target, propertiesOf(schema, context), undefined, {
 			...context,
 			stack: [...context.stack, name],
 		});
-		if (!known) {
+		if (!known || !isLinked(name)) {
 			return body;
 		}
 		const embedded = lib(context, "Embedded");
@@ -301,7 +400,7 @@ const typeOf = (
 			? line
 			: `${embedded}<\n\t${indent(body)},\n\t${iriOf(target)}\n>`;
 	}
-	if (schema.enum) {
+	if (schema.enum?.some((value) => value !== null)) {
 		return schema.enum
 			.filter((value) => value !== null)
 			.map((value) => JSON.stringify(value))
@@ -320,15 +419,22 @@ const typeOf = (
 		return lib(context, "AnyIri");
 	}
 	if (type === "array") {
-		const items = typeOf(schema.items ?? {}, owner, property, context);
+		const items = `${typeOf(schema.items ?? {}, owner, property, context)}${schema.items && isNullable(schema.items) ? " | null" : ""}`;
 		return `${items.includes(" ") ? `(${items})` : items}[]`;
 	}
 	if (schema.properties) {
-		return objectType(owner, schema.properties, undefined, context);
+		return context.sent
+			? sentObject(
+					owner,
+					Object.entries(schema.properties),
+					schema.required ?? [],
+					context,
+				)
+			: objectType(owner, schema.properties, undefined, context);
 	}
 	if (type === "object") {
 		const values = schema.additionalProperties;
-		return `{ [key: string]: ${typeof values === "object" ? typeOf(values, owner, property, context) : "unknown"} }`;
+		return `{ [key: string]: ${typeof values === "object" ? `${typeOf(values, owner, property, context)}${isNullable(values) ? " | null" : ""}` : "unknown"} }`;
 	}
 	if (type === "integer" || type === "number") {
 		return "number";
@@ -336,44 +442,81 @@ const typeOf = (
 	return type === "string" || type === "boolean" ? type : "unknown";
 };
 
-const writtenBy = (resource: Resource, context: Context) =>
+const writtenBy = (routes: Route[], context: Context) =>
 	Object.assign(
 		{},
-		...resource.writes.map((write) => propertiesOf(write, context)),
+		...routes
+			.flatMap(({ writes }) => writes)
+			.map((write) => propertiesOf(write, context)),
 	) as Record<string, Schema>;
 
-const bodyType = (resource: Resource, context: Context) => {
-	const read = propertiesOf(resource.read, context);
-	const lines = Object.entries(writtenBy(resource, context))
-		.filter(
-			([name, schema]) =>
-				!name.startsWith("@") &&
-				(schema.writeOnly || !Object.hasOwn(read, name)),
-		)
-		.map(
-			([name, schema]) =>
-				`${key(name)}?: ${typeOf(schema, resource.name, name, context)}${isNullable(schema) ? " | null" : ""};`,
-		);
-	if (!lines.length) {
+const requiredOf = (schema: Schema | undefined, context: Context): string[] => {
+	if (!schema) {
 		return [];
 	}
-	const name = context.taken.has(`${resource.name}Body`)
-		? `${resource.name}WriteBody`
-		: `${resource.name}Body`;
-	return [
-		`export type ${name} = ${lib(context, "WriteBody")}<${resource.name}> & {\n\t${indent(lines.join("\n"))}\n};`,
-	];
+	const name = schemaName(schema);
+	return [name ? context.schemas[name] : undefined, ...(schema.allOf ?? [])]
+		.flatMap((part) => requiredOf(part, context))
+		.concat(schema.required ?? []);
 };
 
-const modelOf = (resource: Resource, schema: Schema, context: Context) =>
+const sentObject = (
+	owner: string,
+	properties: [string, Schema][],
+	required: string[],
+	context: Context,
+): string => {
+	const lines = properties
+		.filter(([name, schema]) => !name.startsWith("@") && !schema.readOnly)
+		.map(([name, schema]) => {
+			const nullable = isNullable(schema);
+			const needed = context.sent === "required" && required.includes(name);
+			const optional = context.sent === "typed" ? nullable : !needed;
+			return `${key(name)}${optional ? "?" : ""}: ${typeOf(schema, owner, name, context)}${nullable && !needed ? " | null" : ""};`;
+		});
+	return lines.length ? `{\n\t${indent(lines.join("\n"))}\n}` : "{}";
+};
+
+const bodyType = (resource: Resource, context: Context, name: string) => {
+	const read = propertiesOf(resource.read, context);
+	const extras = sentObject(
+		resource.name,
+		Object.entries(writtenBy([resource], context)).filter(
+			([name, schema]) => schema.writeOnly || !Object.hasOwn(read, name),
+		),
+		[],
+		{ ...context, selectable: false, sent: "partial" },
+	);
+	return extras === "{}"
+		? undefined
+		: {
+				name,
+				type: `export type ${name} = ${lib(context, "WriteBody")}<${resource.name}> & ${extras};`,
+			};
+};
+
+const modelOf = (
+	resource: Resource,
+	schema: Schema,
+	context: Context,
+	routes: Route[] = [],
+	self = resource.name,
+) =>
 	objectType(
 		resource.name,
 		propertiesOf(schema, context),
-		writtenBy(resource, context),
-		{ ...context, stack: [schemaName(schema) ?? resource.name] },
+		writtenBy(routes, context),
+		{ ...context, stack: [schemaName(schema) ?? resource.name], self },
 	);
 
-/** Writes the IRI type, the model and, when some properties are only written, the body of every resource an API Platform application documents, with a model for each other serialization its routes return, then the other objects its operations take or return. */
+const comment = (text: string) => `/** ${text.replaceAll("*/", "*\\/")} */`;
+
+const byPath = (routes: string[]) =>
+	[...routes].sort((a, b) =>
+		a.split(" ").reverse().join() < b.split(" ").reverse().join() ? -1 : 1,
+	);
+
+/** Writes the IRI type and the model of every resource an API Platform application documents, with the body of its writes when it cannot be deduced, a model for each other serialization its routes return and a body for each write route of its own, then the other objects its operations take or return. */
 export const generateTypes = (
 	openApi: OpenApiDocument,
 	hydraDocument?: HydraDocument,
@@ -383,46 +526,63 @@ export const generateTypes = (
 	const bases = new Set(Object.keys(schemas).map(baseName));
 	const aliases = new Map(
 		[...bases].flatMap((base) => {
-			const stem = base?.replace(/\d+$/, "");
-			return base && stem && stem !== base && bases.has(stem)
-				? [[base, stem] as const]
-				: [];
+			const digits = base?.match(/\d+$/)?.[0].length ?? 0;
+			const stem = Array.from({ length: digits }, (_, index) =>
+				base?.slice(0, -(index + 1)),
+			).find((candidate) => candidate && bases.has(candidate));
+			return base && stem ? [[base, stem] as const] : [];
 		}),
 	);
 	const context: Context = {
 		schemas,
 		resources: readResources(openApi, aliases),
-		targets: readTargets(hydraDocument),
+		targets: readTargets(hydraDocument, aliases),
 		aliases,
 		imports: new Set(),
 		taken: new Set(),
 		keepNullValues,
 		selectable: false,
 		stack: [],
+		names: new Map(),
 	};
+	context.resources.forEach(({ name, read }) =>
+		context.names.set(schemaName(read) ?? name, name),
+	);
+	const serialization = (schema: Schema) =>
+		`${groupsOf(schema)} ${Object.keys(propertiesOf(schema, context))
+			.filter((property) => !property.startsWith("@"))
+			.sort()
+			.join()}`;
 	const used = new Set(
 		[...context.resources.values()]
+			.flatMap(({ routes }) => routes)
 			.flatMap(({ read, writes }) => [read, ...writes])
 			.map(schemaName),
 	);
-	const others = new Map<string, Schema>();
+	const others = new Map<
+		string,
+		{ type: string; schema: Schema; returned: string[]; taken: string[] }
+	>();
 	const variants = new Map<string, Variant>();
+	const inputs = new Map<string, Variant>();
 	Object.entries(openApi.paths ?? {})
 		.flatMap(([path, item]) =>
 			(["get", "post", "put", "patch"] as const).flatMap((method) => {
 				const answers = ["200", "201"].map((status) =>
 					schemaOf(item[method]?.responses?.[status]),
 				);
+				const route = `${method.toUpperCase()} ${path}`;
 				return [
-					{ schema: schemaOf(item[method]?.requestBody), route: undefined },
+					{ schema: schemaOf(item[method]?.requestBody), route, taken: true },
 					...[...answers, ...answers.map(membersOf)].map((schema) => ({
 						schema,
-						route: `${method.toUpperCase()} ${path}`,
+						route,
+						taken: false,
 					})),
 				];
 			}),
 		)
-		.forEach(({ schema, route }) => {
+		.forEach(({ schema, route, taken }) => {
 			const name = schemaName(schema);
 			const type = name
 				?.replace(/-.*$/, "")
@@ -433,46 +593,145 @@ export const generateTypes = (
 				return;
 			}
 			const resource = context.resources.get(aliases.get(type) ?? type);
-			if (!resource) {
-				if (!used.has(name)) {
-					others.set(type, others.get(type) ?? schema);
-				}
-				return;
-			}
 			const draft = {
 				...context,
 				imports: new Set<string>(),
-				selectable: resource.selectable,
+				selectable: resource?.selectable ?? false,
 			};
-			const model = modelOf(resource, schema, draft);
-			if (!route || model === modelOf(resource, resource.read, draft)) {
+			if (!resource) {
+				const properties = propertiesOf(schema, context);
+				const written = Object.entries(properties)
+					.filter(([, property]) => property.writeOnly)
+					.map(([property]) => property);
+				const content = `${type} ${objectType(type, properties, undefined, { ...draft, stack: [name] })} ${written.join()}`;
+				const object = others.get(content) ?? {
+					type,
+					schema,
+					returned: [],
+					taken: [],
+				};
+				if (!used.has(name)) {
+					others.set(
+						content,
+						taken
+							? { ...object, taken: [...new Set([...object.taken, route])] }
+							: {
+									...object,
+									returned: [...new Set([...object.returned, route])],
+								},
+					);
+				}
 				return;
 			}
-			const key = `${resource.name} ${model}`;
-			const variant = variants.get(key) ?? { resource, schema, routes: [] };
-			variants.set(key, {
+			const sent = (body: Schema) =>
+				sentObject(
+					resource.name,
+					Object.entries(propertiesOf(body, context)),
+					[],
+					{
+						...draft,
+						selectable: false,
+						sent: "partial",
+						stack: [schemaName(body) ?? name],
+					},
+				);
+			const same = serialization(schema);
+			const standard = resource.routes.flatMap(({ writes }) => writes);
+			const model = taken ? sent(schema) : modelOf(resource, schema, draft);
+			const known = taken
+				? used.has(name) ||
+					model === "{}" ||
+					standard.some(
+						(write) => serialization(write) === same || sent(write) === model,
+					)
+				: serialization(resource.read) === same ||
+					model === modelOf(resource, resource.read, draft);
+			if (known) {
+				return;
+			}
+			const found = taken ? inputs : variants;
+			const [joined] =
+				[...found].find(
+					([, other]) =>
+						!taken &&
+						other.resource === resource &&
+						serialization(other.schema) === same,
+				) ?? [];
+			const content =
+				joined ??
+				`${resource.name} ${model} ${taken ? requiredOf(schema, context).join() : ""}`;
+			const variant = found.get(content) ?? { resource, schema, routes: [] };
+			found.set(content, {
 				...variant,
-				routes: [...new Set([...variant.routes, route])],
+				routes: byPath([...new Set([...variant.routes, route])]),
 			});
 		});
 	[...context.resources.keys()]
 		.flatMap((name) => [name, iriOf(name)])
-		.concat([...others.keys()])
 		.forEach((name) => context.taken.add(name));
-	const named = [...variants.values()]
-		.map((variant) => ({
-			variant,
-			base: variantName(variant.resource.name, groupsOf(variant.schema)),
-		}))
+	const reserve = (base: string) => {
+		let name = base;
+		for (let count = 2; context.taken.has(name); count++) {
+			name = `${base}${count}`;
+		}
+		context.taken.add(name);
+		return name;
+	};
+	const objects = [...others.values()]
+		.map((object, _, all) => {
+			const owner = resourceName(schemaName(object.schema), aliases) ?? "";
+			const words = (object.type.match(WORDS) ?? []).map((word) =>
+				word.toLowerCase(),
+			);
+			const groups = (groupsOf(object.schema).match(WORDS) ?? [])
+				.filter((word) => !words.includes(word.toLowerCase()))
+				.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+				.join("");
+			const shared = all.filter(({ type }) => type === object.type).length > 1;
+			return {
+				...object,
+				base: shared
+					? `${object.type.startsWith(owner) ? "" : owner}${object.type}${groups}`
+					: object.type,
+			};
+		})
 		.sort((a, b) => (a.base < b.base ? -1 : 1))
-		.map(({ variant, base }) => {
-			let name = base;
-			for (let count = 2; context.taken.has(name); count++) {
-				name = `${base}${count}`;
-			}
-			context.taken.add(name);
-			return { name, variant };
-		});
+		.map((object) => ({ ...object, name: reserve(object.base) }));
+	const bodies = new Map(
+		[...context.resources.keys()].map((name) => [
+			name,
+			reserve(
+				context.taken.has(`${name}Body`) ? `${name}WriteBody` : `${name}Body`,
+			),
+		]),
+	);
+	const name = (found: Map<string, Variant>, suffix: string) =>
+		[...found.values()]
+			.map((variant) => {
+				const { resource, routes } = variant;
+				const own = routes.some(
+					(route) =>
+						route === `GET ${resource.collection}` ||
+						route === `GET ${resource.item}`,
+				);
+				return {
+					variant,
+					order: `${variantName(resource, groupsOf(variant.schema))}${suffix} ${own ? 0 : 1} ${routes[0]}`,
+				};
+			})
+			.sort((a, b) => (a.order < b.order ? -1 : 1))
+			.map(({ variant, order }) => ({
+				name: reserve(order.split(" ")[0]),
+				variant,
+			}));
+	const named = name(variants, "");
+	const taken = name(inputs, "Body");
+	[
+		...named,
+		...objects.map((object) => ({ ...object, variant: object })),
+	].forEach(({ name, variant }) =>
+		context.names.set(schemaName(variant.schema) ?? name, name),
+	);
 	const models = [...context.resources.values()]
 		.sort((a, b) => (a.name < b.name ? -1 : 1))
 		.map((resource) => {
@@ -481,44 +740,116 @@ export const generateTypes = (
 				selectable: resource.selectable,
 				stack: [schemaName(resource.read) ?? resource.name],
 			};
-			const read = propertiesOf(resource.read, context);
-			const path = resource.path.includes("{")
-				? `\`${resource.path.replace(/\{[^}]+\}/g, "${string}")}\``
-				: `"${resource.path}"`;
-			const type = [read[resource.identifier]?.type]
-				.flat()
-				.find((candidate) => candidate !== "null");
-			const identifier =
-				type === "integer" || type === "number"
-					? ""
-					: type === "string"
-						? ", string"
-						: ", string | number";
+			const shape = (schema: Schema) =>
+				modelOf(resource, schema, { ...scoped, imports: new Set<string>() });
+			const returning = (schema: Schema, routes: string[]) =>
+				resource.routes.filter(
+					(route) =>
+						serialization(route.read) === serialization(schema) ||
+						shape(route.read) === shape(schema) ||
+						routes.includes(`GET ${route.collection}`),
+				);
+			const iris = [
+				...new Set(
+					resource.routes.map(({ path, identifier, read }) => {
+						const type = [propertiesOf(read, context)[identifier]?.type]
+							.flat()
+							.find((candidate) => candidate !== "null");
+						const id =
+							type === "integer" || type === "number"
+								? ""
+								: type === "string"
+									? ", string"
+									: ", string | number";
+						const literal = path.includes("{")
+							? `\`${path.replace(/[`\\]/g, "\\$&").replace(/\{[^}]+\}/g, "${string}")}\``
+							: JSON.stringify(path);
+						return `${lib(context, "Iri")}<${literal}${id}>`;
+					}),
+				),
+			];
+			const iri = `export type ${iriOf(resource.name)} = ${iris.join(" | ")};`;
+			const body = bodyType(
+				resource,
+				scoped,
+				bodies.get(resource.name) ?? resource.name,
+			);
+			const others = named.filter(
+				({ variant }) => variant.resource === resource,
+			);
+			const listed = others.find(({ variant }) =>
+				variant.routes.includes(`GET ${resource.collection}`),
+			);
+			const options = [
+				body && `body: ${body.name}`,
+				listed && `collection: ${listed.name}`,
+				!resource.output && "output: false",
+			].filter(Boolean);
+			const service = `// As a service: entityServiceBuilder<${iriOf(resource.name)}, ${resource.name}${options.length ? `, { ${options.join("; ")} }` : ""}>(api, ${JSON.stringify(`/${resource.path}`)})\n`;
 			return [
-				`export type ${iriOf(resource.name)} = ${lib(context, "Iri")}<${path}${identifier}>;\nexport type ${resource.name} = ${modelOf(resource, resource.read, scoped)};`,
-				...bodyType(resource, scoped),
-				...named
+				`${service}${iri.length <= 80 || iris.length === 1 ? iri : `export type ${iriOf(resource.name)} =\n\t| ${iris.join("\n\t| ")};`}\nexport type ${resource.name} = ${modelOf(resource, resource.read, scoped, returning(resource.read, []))};`,
+				...(body ? [body.type] : []),
+				...others.map(({ name, variant }) => {
+					const selectable = scoped.selectable && !groupsOf(variant.schema);
+					return `${comment(`Returned${isLinked(schemaName(variant.schema)) ? "" : " in plain JSON"} by ${variant.routes.join(", ")}.`)}\nexport type ${name} = ${modelOf(resource, variant.schema, { ...context, selectable }, returning(variant.schema, variant.routes), name)};`;
+				}),
+				...taken
 					.filter(({ variant }) => variant.resource === resource)
 					.map(({ name, variant }) => {
-						const selectable = scoped.selectable && !groupsOf(variant.schema);
-						return `/** Returned by ${variant.routes.join(", ")}. */\nexport type ${name} = ${modelOf(resource, variant.schema, { ...context, selectable })};`;
+						const sent = sentObject(
+							resource.name,
+							Object.entries(propertiesOf(variant.schema, context)),
+							requiredOf(variant.schema, context),
+							{
+								...context,
+								sent: variant.routes.every((route) =>
+									/^(POST|PUT) /.test(route),
+								)
+									? "required"
+									: "partial",
+								stack: [schemaName(variant.schema) ?? name],
+							},
+						);
+						return `${comment(`Taken by ${variant.routes.join(", ")}.`)}\nexport type ${name} = ${sent};`;
 					}),
-			].join("\n\n");
+			].join("\n");
 		});
-	const plain = [...others]
-		.sort(([a], [b]) => (a < b ? -1 : 1))
-		.map(
-			([type, schema]) =>
-				`export type ${type} = ${objectType(type, propertiesOf(schema, context), undefined, { ...context, stack: [schemaName(schema) ?? type] })};`,
-		);
+	const plain = objects.map(({ name, type, schema, returned, taken }) => {
+		const routes = [
+			returned.length && `Returned by ${byPath(returned).join(", ")}.`,
+			taken.length && `Taken by ${byPath(taken).join(", ")}.`,
+		].filter(Boolean);
+		const scoped = {
+			...context,
+			keepNullValues: keepNullValues || taken.length > 0,
+			stack: [schemaName(schema) ?? type],
+			self: name,
+		};
+		const properties = propertiesOf(schema, context);
+		const object = returned.length
+			? objectType(type, properties, undefined, scoped)
+			: sentObject(type, Object.entries(properties), [], {
+					...scoped,
+					sent: "typed",
+				});
+		return `${comment(routes.join(" "))}\nexport type ${name} = ${object};`;
+	});
 	const imports = context.imports.size
 		? [
 				`import type { ${[...context.imports].sort().join(", ")} } from "apiplatform-fetch-builder";`,
 			]
 		: [];
+	const register = JSON.stringify(openApi.paths ?? {}).includes(
+		'"hydra:member"',
+	)
+		? [
+				'declare module "apiplatform-fetch-builder" {\n\tinterface Register {\n\t\thydraPrefix: true;\n\t}\n}',
+			]
+		: [];
 	const generated = [
-		"// Generated by apiplatform-fetch-builder. Do not edit.",
+		`// Generated by apiplatform-fetch-builder${keepNullValues ? " with --keep-null-values" : ""}. Do not edit.`,
 		...imports,
+		...register,
 		...models,
 		...plain,
 	].join("\n\n");

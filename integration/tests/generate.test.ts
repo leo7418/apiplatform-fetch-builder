@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 
 import fetchBuilder from "../../src/index.ts";
 
+import { hydraPrefix } from "./api.ts";
+
 const { API_URL } = process.env;
 assert.ok(API_URL, "Run the suite with integration/run.sh");
 
@@ -33,8 +35,16 @@ const example = new URL(
 	import.meta.url,
 );
 
-test("the generate command should write the models the example relies on", async () => {
-	assert.equal(await generate(API_URL), await readFile(example, "utf8"));
+test("the generate command should write the models the example relies on, and declare the prefix of an API that keeps it", async () => {
+	const register =
+		'declare module "apiplatform-fetch-builder" {\n\tinterface Register {\n\t\thydraPrefix: true;\n\t}\n}\n\n';
+	const generated = await generate(API_URL);
+
+	assert.equal(generated.includes(register), hydraPrefix);
+	assert.equal(
+		generated.replace(register, ""),
+		await readFile(example, "utf8"),
+	);
 });
 
 test("the generate command should write the IRIs of an API served under a base path", async () => {
@@ -44,7 +54,7 @@ test("the generate command should write the IRIs of an API served under a base p
 		.fetch();
 
 	const [, path] =
-		(await generate(url)).match(/CompanyIri = Iri<"(.+)">/) ?? [];
+		(await generate(url)).match(/CompanyIri = Iri<"([^"]+)">/) ?? [];
 
 	assert.equal(company["@id"], `/${path}/1`);
 });

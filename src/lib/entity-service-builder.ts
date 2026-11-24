@@ -6,7 +6,7 @@ import type { Collection, PartialCollection } from "../types/collection.ts";
 import type { AnyIri, IriId } from "../types/iri.ts";
 import type { Item } from "../types/item.ts";
 import type { PropertyPath } from "../types/property-path.ts";
-import type { PropertyValue } from "../types/property-value.ts";
+import type { PropertyValue, Read } from "../types/property-value.ts";
 
 export type GetAllPagesProgress = {
 	page: number;
@@ -77,15 +77,15 @@ type Member<Entity, Options> = [Option<Options, "collection">] extends [never]
 	? Entity
 	: Option<Options, "collection">;
 
-type Listed<EntityIri extends AnyIri, Entity, Options> = Collections<
-	Member<Entity, Options>,
+type Listed<EntityIri extends AnyIri, Model, Options> = Collections<
+	Model,
 	EntityIri
 >[[Option<Options, "pagination">] extends [never] ? "full" : "partial"];
 
 type Written<EntityIri extends AnyIri, Entity, Options> = [
 	Option<Options, "output">,
 ] extends [never]
-	? Item<Entity, EntityIri>
+	? Item<Read<Entity>, EntityIri>
 	: null;
 
 export type EntityService<
@@ -97,17 +97,39 @@ export type EntityService<
 		body: BodyOf<Entity, Options>,
 	) => Promise<Written<EntityIri, Entity, Options>>;
 	get: {
-		(iriOrId: EntityIri | IriId<EntityIri>): Promise<Item<Entity, EntityIri>>;
-		<P extends PropertyPath<Item<Entity, EntityIri>>[] = []>(
+		(
+			iriOrId: EntityIri | IriId<EntityIri>,
+			query?: QueryOptions<Item<Entity, EntityIri>, []>,
+		): Promise<Item<Read<Entity>, EntityIri>>;
+		<P extends PropertyPath<Item<Entity, EntityIri>>[]>(
 			iriOrId: EntityIri | IriId<EntityIri>,
 			query: QueryOptions<Item<Entity, EntityIri>, P>,
 		): Promise<PropertyValue<Item<Entity, EntityIri>, P[number]>>;
 	};
 	getAll: {
-		(): Promise<Listed<EntityIri, Entity, Options>>;
-		<P extends PropertyPath<Listed<EntityIri, Entity, Options>>[] = []>(
-			query: QueryOptions<Listed<EntityIri, Entity, Options>, P>,
-		): Promise<PropertyValue<Listed<EntityIri, Entity, Options>, P[number]>>;
+		(
+			query?: QueryOptions<
+				Listed<EntityIri, Member<Entity, Options>, Options>,
+				[],
+				Collection<Entity | Member<Entity, Options>, EntityIri>
+			>,
+		): Promise<Listed<EntityIri, Read<Member<Entity, Options>>, Options>>;
+		<
+			P extends PropertyPath<
+				Listed<EntityIri, Member<Entity, Options>, Options>
+			>[],
+		>(
+			query: QueryOptions<
+				Listed<EntityIri, Member<Entity, Options>, Options>,
+				P,
+				Collection<Entity | Member<Entity, Options>, EntityIri>
+			>,
+		): Promise<
+			PropertyValue<
+				Listed<EntityIri, Member<Entity, Options>, Options>,
+				P[number]
+			>
+		>;
 	};
 	update: {
 		(
@@ -143,14 +165,18 @@ export type EntityService<
 	getAllPages: {
 		(
 			onProgress?: OnProgress,
-		): Promise<Collection<Member<Entity, Options>, EntityIri>>;
+		): Promise<Collection<Read<Member<Entity, Options>>, EntityIri>>;
 		(
 			query: Omit<
-				QueryOptions<Collection<Member<Entity, Options>, EntityIri>, never[]>,
+				QueryOptions<
+					Collection<Member<Entity, Options>, EntityIri>,
+					never[],
+					Collection<Entity | Member<Entity, Options>, EntityIri>
+				>,
 				"pagination" | "pageIndex"
 			>,
 			onProgress?: OnProgress,
-		): Promise<Collection<Member<Entity, Options>, EntityIri>>;
+		): Promise<Collection<Read<Member<Entity, Options>>, EntityIri>>;
 	};
 	delete: (idOrIri: EntityIri | IriId<EntityIri>) => Promise<null>;
 };

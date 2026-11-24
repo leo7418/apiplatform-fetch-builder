@@ -2,6 +2,7 @@
 
 import type { Iri } from "apiplatform-fetch-builder";
 
+// As a service: entityServiceBuilder<CompanyIri, Company>(api, "/api/companies")
 export type CompanyIri = Iri<"api/companies">;
 export type Company = {
 	readonly id: number;
@@ -9,6 +10,7 @@ export type Company = {
 	users: (User | UserIri)[];
 };
 
+// As a service: entityServiceBuilder<TaskIri, Task, { collection: TaskList }>(api, "/api/tasks")
 export type TaskIri = Iri<"api/tasks">;
 export type Task = {
 	readonly id: number;
@@ -17,7 +19,6 @@ export type Task = {
 	note?: string;
 	assignee?: User | UserIri;
 };
-
 /** Returned by GET /api/tasks. */
 export type TaskList = {
 	readonly id: number;
@@ -25,6 +26,7 @@ export type TaskList = {
 	status: string;
 };
 
+// As a service: entityServiceBuilder<UserIri, User>(api, "/api/users")
 export type UserIri = Iri<"api/users">;
 export type User = {
 	readonly id: number;

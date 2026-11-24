@@ -82,7 +82,7 @@ const user = await users.get(1);
 await users.update(user["@id"], { name: "Bob" });
 ```
 
-The sections below detail both layers, and [examples/](./examples) holds complete programs.
+The models do not have to be written by hand: `npx apiplatform-fetch-builder generate https://api.example.com/api src` [writes them](#generating-the-models) from the documentation of the API. The sections below detail both layers, and [examples/](./examples) holds complete programs.
 
 ## `fetchBuilder`
 
@@ -221,7 +221,7 @@ A file served outside the path of the entrypoint, such as `/media/1.png` next to
 
 ## `hydra:` prefix
 
-The types follow the API Platform 4 default, where collections and errors have no `hydra:` prefix (`member`, `totalItems`, `view`). When the API keeps the prefix (API Platform 3, or `hydra_prefix: true`), declare it once in the project:
+The types follow the API Platform 4 default, where collections and errors have no `hydra:` prefix (`member`, `totalItems`, `view`). When the API keeps the prefix (API Platform 3, or `hydra_prefix: true`), declare it once in the project, which a [generated file](#generating-the-models) does by itself:
 
 ```ts
 declare module "apiplatform-fetch-builder" {
@@ -231,7 +231,7 @@ declare module "apiplatform-fetch-builder" {
 }
 ```
 
-Write it in a file that has an `import` or an `export` (in a declaration file, add `export {};`): alone in a file, the block would replace the types of the package instead of extending them.
+Write it in a file that has an `import` or an `export` (in a declaration file, add `export {};`): alone in a file, the block would replace the types of the package instead of extending them. The declaration holds for the whole project, which can therefore read collections in one format only.
 
 `Collection`, `PartialCollection` and `HydraError` then expose `hydra:member`, `hydra:totalItems`, `hydra:view`, `hydra:title`, `hydra:description`. `getAllPages` reads both formats at runtime. See [examples/hydra-prefix](./examples/hydra-prefix).
 
@@ -367,55 +367,84 @@ The models can be written from the documentation of the API instead of by hand:
 npx apiplatform-fetch-builder generate https://api.example.com/api src
 ```
 
-The command reads the OpenAPI and the Hydra documentation of a running API and writes `src/api-types.ts`, or the file itself when the output ends with `.ts`. For each resource, it writes the IRI type and the model that `entityServiceBuilder<UserIri, User>` expects:
+The command reads the OpenAPI and the Hydra documentation of a running API and writes `src/api-types.ts`, or the file itself when the output ends with `.ts`, `.mts` or `.cts`. For each resource, it writes the IRI type and the model that `entityServiceBuilder<UserIri, User>` expects:
 
 | In the documentation | In the model |
 |----------------------|--------------|
-| A property that is read-only, or that none of the write operations accepts | `readonly` |
-| A nullable property | Optional: `note?: string`, or `note: string \| null` with `--keep-null-values` |
+| A property that is read-only, or that none of the standard writes of the route accepts: its `POST`, `PUT` and `PATCH`, not a write route of its own | `readonly`. A property that only the `POST` accepts is writable: the model does not tell a creation from an update |
+| A nullable property | Optional: `note?: string`, or `note?: string \| null` with `--keep-null-values` |
 | A relation returned as an IRI | `CompanyIri`, or `Company \| CompanyIri` when the resource declares the property filter and has no serialization groups: the filter then embeds the relation once one of its properties is selected |
 | A relation that the serialization groups embed | `Embedded<{ name: string }, CompanyIri>`, with the embedded properties |
 | An enumeration | The union of its values |
 | A property that is only written, such as a password | Not in the model: a `UserBody` type is written next to it, for the `body` option of the service |
 | A route that returns a resource in another serialization than its item, such as a collection with groups of its own | A model named after the resource and the groups of that serialization, such as `UserList` for `user:list`, with the routes that return it in its comment |
-| An object that is not a resource: a DTO, what a custom operation takes or returns | A plain type under its own name, such as `TaskStats`, without an IRI |
+| A write route of its own that takes the resource with other groups, such as `POST /register` | A body named after the resource and those groups, such as `AccountRegisterBody`, with the routes that take it in its comment. What the documentation requires is required, unless a `PATCH` takes the body too |
+| An object that is not a resource: a DTO, what a custom operation takes or returns | A plain type under its own name, such as `TaskStats`, without an IRI, with the routes that use it in its comment. Two of them that share a name take the one of their resource and their groups: `UserStats`, `TaskStats` |
 
 ```ts
+// As a service: entityServiceBuilder<UserIri, User, { body: UserBody; collection: UserList }>(api, "/api/users")
+export type UserIri = Iri<"api/users">;
+export type User = {
+  readonly id: number;
+  name: string;
+  email: string;
+};
 export type UserBody = WriteBody<User> & {
   plainPassword?: string;
 };
-
-/** Returned by GET /api/users. */
+/** Returned by GET /api/companies/{companyId}/employees, GET /api/users. */
 export type UserList = {
   readonly id: number;
   name: string;
 };
+/** Taken by POST /api/register. */
+export type UserRegisterBody = {
+  email: string;
+  plainPassword: string;
+  locale?: string;
+};
 
 const users = entityServiceBuilder<UserIri, User, { body: UserBody; collection: UserList }>(api, "/users");
+const employees = await api.get<Collection<UserList, UserIri>>("/companies/1/employees").fetch();
+const registered = await api.post<Item<User, UserIri>, UserRegisterBody>("/register").fetch({ email, plainPassword });
 ```
 
-The model of a resource is the one of its item. The other serializations are told apart by their content, so two routes that return the same properties share a model, and a model whose serialization has no group is named `UserFull`.
+The model of a resource is the one of its item, read on its shortest route when it has several, `/users/{id}` rather than `/admin/users/{id}`, and on the one that has writes when two are as short. The types of a resource follow each other under a comment that declares its service on the path of that route, with the `body`, `collection` and `output` options it needs; `{ pagination: "partial" }` is added by hand, since the documentation of a partial collection is the same as any other. The comment of every other model gives the routes that return it, to type them with `fetchBuilder` or with a service of their own. A few rules name these models and bodies:
 
-The input can also be an OpenAPI file, exported with `bin/console api:openapi:export`. That document does not say which resource a relation points to, so a relation returned as an IRI is then typed `AnyIri`, unless the Hydra documentation (`/docs.jsonld`) is given too:
+- The name of the resource, in the singular or as its path spells it, and the validation groups are left out of the groups: `user:list`, `users:list` and `user_list` all give `UserList`.
+- A serialization without group is named `UserFull`, and a name that is already taken gets a number, the resource's own routes coming first: `TodoList2` when `TodoList` is a resource.
+- Two routes share a type when they return or take the same properties, or the same serialization groups and property names whatever their validation groups, which API Platform folds into the schema of each operation; a route that takes what the standard writes take gets none.
+
+In collection members and relations, API Platform writes the IRI of the item route the class declares first, and an item read on another of its routes carries the URL of that route: the IRI type of a class with several item routes accepts all of them, such as `Iri<"products"> | Iri<"admin/products">`. A model of another route is the model of a service of its own, `entityServiceBuilder<PageIri, PageReadAdmin>(api, "/admin/pages")`, whose writes are the ones of that route. Such a service reaches its route with an id, `get(member.id)` or `update(member.id, body)`: an IRI, or an item sent back with its `@id`, goes to the route of the IRI.
+
+On an API that keeps the `hydra:` prefix, the generated file declares it, as described under [`hydra:` prefix](#hydra-prefix).
+
+The input can also be an OpenAPI file, exported with `bin/console api:openapi:export`. That document does not say which resource a relation points to, so a relation returned as an IRI is then typed `AnyIri`, unless the Hydra documentation (`/docs.jsonld`) is given too, as a file or as a URL:
 
 ```bash
 npx apiplatform-fetch-builder generate openapi.json src --hydra docs.jsonld
 ```
 
+Given with the URL of an API, `--hydra` replaces its Hydra documentation.
+
 A few things depend on what the API documents:
 
 - A resource that is only reachable under another one is written with the path of its parent in its IRI, such as ``Iri<`companies/${string}/employees`>``. A sub-resource whose resource also has a path of its own needs nothing more than the model of that resource.
 - A model describes a resource as its own routes return it. Reached through a relation of another resource, it can be serialized differently: with `properties: ["assignee.company"]` on a task, `company` comes as an IRI even when the model of `User` declares it embedded.
+- A route that answers plain JSON only, such as one declared with `outputFormats: ['json']`, has a model whose relations carry no `@id`, and its comment says so: read it with `.withHeaders({ Accept: "application/json" })`.
 - A resource named like a type of this library, such as `Embedded`, keeps its name: the generated file then imports the type of the library as `ApiEmbedded`.
-- An array is typed `unknown[]` when the documentation does not give the type of its items. API Platform 4.4 and 5.0 only read it from the PHP doc comments (`@var string[]`) when the API has both `phpstan/phpdoc-parser` and `phpdocumentor/reflection-docblock` installed.
+- A resource whose name is the one of another resource followed by a number, such as `Oauth2` next to `Oauth`, is taken for a second declaration of the same class, which API Platform 5 names that way: it gets a model, and its route joins the IRI type of the other.
+- An array is typed `unknown[]` when the documentation does not give the type of its items. API Platform 4.4 and 5.0 only read it from the PHP doc comments (`@var string[]`) when the API has both `phpstan/phpdoc-parser` and `phpdocumentor/reflection-docblock` installed. API Platform 3.4 documents an untyped array as an array of strings.
 
 The command writes what the API documents. To correct a type, such as the content of a JSON column, declare it on the API with `#[ApiProperty(schema: […])]` and generate again, rather than editing the file: exclude it from Prettier and ESLint, which would rewrite it.
 
-API Platform leaves the null values out of its responses, hence the optional properties. For an API that sets `skip_null_values` to `false` and returns them, `--keep-null-values` writes every nullable property as `note: string | null`:
+API Platform leaves the null values out of its responses, hence the optional properties. For an API that returns them, because some or all of its resources set `skip_null_values` to `false`, `--keep-null-values` writes every nullable property as `note?: string | null`:
 
 ```bash
 npx apiplatform-fetch-builder generate https://api.example.com/api src --keep-null-values
 ```
+
+The documentation does not say which resources have that setting, so every nullable property is then written as null or left out, and the first line of the file records the option.
 
 A documentation behind authentication is read with `--header`, which can be repeated:
 
@@ -423,7 +452,7 @@ A documentation behind authentication is read with `--header`, which can be repe
 npx apiplatform-fetch-builder generate https://api.example.com/api src --header "Authorization: Bearer <token>"
 ```
 
-A local API served with a self-signed certificate is refused by Node unless `NODE_EXTRA_CA_CERTS` gives it the certificate of the local authority. The file mode avoids the question, with the two documents downloaded first from `/docs` (`Accept: application/vnd.openapi+json` and `Accept: application/ld+json`).
+A local API served with a certificate of a local authority, such as the one of the Symfony CLI, is refused by Node unless it trusts that authority: start the command with `NODE_OPTIONS=--use-system-ca` (Node 22.15 or later) when the authority is installed in the system, or give `NODE_EXTRA_CA_CERTS` its certificate. The file mode avoids the question, with the two documents downloaded first from `/docs` (`Accept: application/vnd.openapi+json` and `Accept: application/ld+json`).
 
 [examples/generated](./examples/generated) shows a generated file and its use.
 
@@ -465,7 +494,7 @@ const tenantApi = api.clone({ headers: { "X-Tenant": "acme" } });
 
 | Method | Description |
 |--------|-------------|
-| `.fetch(body, options?)` | Performs the request with body |
+| `.fetch(body, options?)` | Performs the request with body. An operation that takes none is called without it, `api.post<Out>(url).fetch()`, and its options still come second: `fetch(undefined, { signal })` |
 | `.fetchRaw(body, options?)` | Same request, resolves with the native `Response` |
 | `.withBody(body)` | Pre-configures the body — returns a builder where `.fetch()` takes no body argument |
 | `.withHeaders(headers)` | Merges custom headers (chainable after `.withBody()`) |
@@ -505,7 +534,7 @@ controller.abort(); // `pending` rejects with an AbortError
 
 Only the options that are set are sent; the API defaults apply to the others.
 
-Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, the third type argument describes the resource: `{ pagination: "partial" }` types `getAll()` as a `PartialCollection`, `{ output: false }` types `create`, `update`, `replace` and `upsert` as resolving with `null`, for a resource whose writes return no content, and `{ collection: UserList }` types the members of `getAll()` and `getAllPages()` with a model of their own, for a collection the API serializes with other groups than an item.
+Type a collection with `Collection<T, I>`, or with `PartialCollection<T, I>` when the resource uses partial pagination, which has no `totalItems`. With `entityServiceBuilder`, the third type argument describes the resource: `{ pagination: "partial" }` types `getAll()` as a `PartialCollection`, `{ output: false }` types `create`, `update`, `replace` and `upsert` as resolving with `null`, for a resource whose writes return no content, and `{ collection: UserList }` types the members of `getAll()` and `getAllPages()` with a model of their own, for a collection the API serializes with other groups than an item: `properties` then takes the paths of that model, while `sortBy` and `filters` take the ones of the item too.
 
 ```ts
 const logs = entityServiceBuilder<LogIri, Log, { pagination: "partial" }>(api, "/logs");
@@ -514,15 +543,15 @@ const users = entityServiceBuilder<UserIri, User, { collection: UserList }>(api,
 
 `properties` narrows the type of the response, whether it is typed as an `Item`, a `Collection`, a plain object or an array of them, and the way a relation is declared tells how the API serializes it:
 
-| Declaration | Meaning | Type once selected |
-|-------------|---------|--------------------|
-| `company: CompanyIri` | Always an IRI | `CompanyIri` |
-| `company: Company` | Always embedded, by the serialization groups of the API | `Company` with `company`, the selected properties with `company.name` |
-| `company: Company \| CompanyIri` | An IRI, embedded only when one of its properties is selected | `CompanyIri` with `company`, the embedded item with `company.name` |
+| Declaration | Meaning | Type a service reads without `properties` | Type once selected |
+|-------------|---------|--------------------------------------------|--------------------|
+| `company: CompanyIri` | Always an IRI | `CompanyIri` | `CompanyIri` |
+| `company: Company` | Always embedded, by the serialization groups of the API | `Company` | `Company` with `company`, the selected properties with `company.name` |
+| `company: Company \| CompanyIri` | An IRI, embedded only when one of its properties is selected | `CompanyIri` | `CompanyIri` with `company`, the embedded item with `company.name` |
 
-`Item<T, I>` is a resource read on its own, with its `@context`; an embedded relation has none, and `Embedded<T, I>` declares it that way. A relation that leads back to a resource already being read, such as `company.employees` when it contains the user that was requested, comes as its IRI: it is typed as the embedded item or the IRI, when the response is typed as an `Item` or a `Collection`. Two cases are not covered by the types: a resource that refers to itself, such as a user who is their own manager, also comes as its IRI, and relations that serialization groups embed in both directions come as IRIs even without `properties`.
+`Item<T, I>` is a resource read on its own, with its `@context`; an embedded relation has none, and `Embedded<T, I>` declares it that way. Their `@type` is a string, or an array of them for a resource declared with several types. A relation that leads back to a resource already being read, such as `company.employees` when it contains the user that was requested, comes as its IRI: it is typed as the embedded item or the IRI, when the response is typed as an `Item` or a `Collection`. Two cases are not covered by the types: a resource that refers to itself, such as a user who is their own manager, also comes as its IRI, and relations that serialization groups embed in both directions come as IRIs even without `properties`.
 
-A route that serializes a resource in another way is typed with its own model. Without `properties`, the response keeps the type it was given. A property whose value is `null` is left out by default, see [Model of a resource](#model-of-a-resource); a nested object left with no property is written as an empty array.
+A route that serializes a resource in another way is typed with its own model. Without `properties`, a service types a relation declared as `Company | CompanyIri` as the IRI the API returns, so `companies.get(user.company)` needs no check: this holds for everything a service resolves with, its writes included, at the first level of the model. `fetchBuilder` resolves with the type it was given: `Read<User>` is the model read that way, for `api.get<Item<Read<User>, UserIri>>("/users/1")`; with `properties`, give it the model itself. A property whose value is `null` is left out by default, see [Model of a resource](#model-of-a-resource); a nested object left with no property is written as an empty array.
 
 ---
 
@@ -578,6 +607,17 @@ const patch = <I extends AnyIri, T extends object>(
 ) => service.update(id, body);
 
 await patch(userService, 1, { name: "Bob" });
+```
+
+What a service reads is not `Item<T, I>` there either, since its relations are read as their IRIs. Leave the return type to be inferred, or name it with `Read<T>`, the model as it is read without a selection, in `Item<Read<T>, I>` and `Collection<Read<T>, I>`:
+
+```ts
+import type { Item, Read } from "apiplatform-fetch-builder";
+
+const load = <I extends AnyIri, T extends object>(
+  service: EntityService<I, T>,
+  id: IriId<I>,
+): Promise<Item<Read<T>, I>> => service.get(id);
 ```
 
 ## Contributing

@@ -37,18 +37,19 @@ type AnyQueryOptions = {
 export type QueryOptions<
 	Out extends object,
 	P extends PropertyPath<Out>[] | undefined,
+	Sorted extends object = Out,
 > = {
 	sortBy?: {
-		id: [PropertyPath<Out>] extends [never]
+		id: [PropertyPath<Sorted>] extends [never]
 			? string
-			: Out extends { "@type": string }
-				? PropertyPath<Out>
-				: PropertyPath<Out> | (string & {});
+			: Sorted extends { "@type": string | string[] }
+				? PropertyPath<Sorted>
+				: PropertyPath<Sorted> | (string & {});
 		desc: boolean;
 	}[];
 	filters?: {
 		/** A property path, or the name of any other filter (`exists`, a custom one). */
-		id: PropertyPath<Out> | (string & {});
+		id: PropertyPath<Sorted> | (string & {});
 		value:
 			| string
 			| number
@@ -108,9 +109,15 @@ export type BodyBuilder<Out extends object | null> = {
 	withHeaders: (headers: HeadersInput | undefined) => BodyBuilder<Out>;
 };
 
+type Send<In, Result> = (
+	...args: undefined extends In
+		? [body?: In, options?: FetchOptions]
+		: [body: In, options?: FetchOptions]
+) => Result;
+
 export type MutationBuilder<Out extends object | null, In> = {
-	fetch: (body: In, options?: FetchOptions) => Promise<Out>;
-	fetchRaw: (body: In, options?: FetchOptions) => Promise<Response>;
+	fetch: Send<In, Promise<Out>>;
+	fetchRaw: Send<In, Promise<Response>>;
 	withHeaders: (headers: HeadersInput | undefined) => MutationBuilder<Out, In>;
 	withBody: (body: In) => BodyBuilder<Out>;
 };
@@ -121,9 +128,12 @@ export type DeleteBuilder = {
 	withHeaders: (headers: HeadersInput | undefined) => DeleteBuilder;
 };
 
-type Mutation = <Out extends object | null, In>(
-	url: string,
-) => MutationBuilder<Out, In>;
+type Mutation = {
+	<Out extends object | null, In>(url: string): MutationBuilder<Out, In>;
+	<Out extends object | null>(url: string): MutationBuilder<Out, undefined>;
+	// Repeated last: ReturnType and Parameters read the last overload
+	<Out extends object | null, In>(url: string): MutationBuilder<Out, In>;
+};
 
 export type Fetcher = {
 	get: <Out extends object>(url: string) => GetBuilder<Out>;

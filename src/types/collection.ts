@@ -1,3 +1,4 @@
+import type { Merged } from "./internal.ts";
 import type { AnyIri, Iri } from "./iri.ts";
 import type { Embedded, Item } from "./item.ts";
 import type { HydraKeys, HydraPrefix } from "./register.ts";
@@ -11,7 +12,7 @@ export type PartialCollection<T, I extends AnyIri = Iri<string>> = {
 	"@id": string;
 	"@type": `${HydraPrefix}Collection`;
 } & HydraKeys<{
-	member: Embedded<WithoutContext<T>, I>[];
+	member: Merged<Embedded<WithoutContext<T>, I>>[];
 	view?: {
 		"@id": string;
 		"@type": `${HydraPrefix}PartialCollectionView`;

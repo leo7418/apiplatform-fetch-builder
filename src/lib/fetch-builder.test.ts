@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 
 import { ApiError, isHydraError } from "./api-error.ts";
 import fetchBuilder from "./fetch-builder.ts";
+import type { Fetcher, MutationBuilder } from "./fetch-builder.ts";
 import type { Collection } from "../types/collection.ts";
 
 const onUnauthorized = mock.fn();
@@ -558,6 +559,52 @@ describe("fetch-builder withBody", () => {
 			.post<{ created: boolean }, undefined>("/create")
 			.withBody(undefined)
 			.fetch({ headers: { "X-Tenant": "acme" } });
+	});
+
+	test("POST: should let generic code take the type of a write builder from the fetcher", async () => {
+		global.fetch = async (_input, init) =>
+			new Response(typeof init?.body === "string" ? init.body : "{}");
+		const send = (builder: ReturnType<Fetcher["post"]>, body: unknown) =>
+			builder.fetch(body);
+		const forward = <Out extends object | null, In>(
+			builder: MutationBuilder<Out, In>,
+			...args: Parameters<MutationBuilder<Out, In>["fetch"]>
+		) => builder.fetch(...args);
+		const args: Parameters<ReturnType<Fetcher["put"]>["fetch"]> = [
+			{ name: "Ada" },
+		];
+
+		const sent = await send(fetcher.post("/users"), { name: "Ada" });
+		const forwarded = await forward(
+			fetcher.post<{ name: string }, { name: string }>("/users"),
+			{ name: "Bob" },
+		);
+
+		assert.deepEqual(
+			[sent, forwarded, args],
+			[{ name: "Ada" }, { name: "Bob" }, [{ name: "Ada" }]],
+		);
+	});
+
+	test("POST: should send no body when the operation takes none", async () => {
+		global.fetch = async (_input, init) => {
+			assert.equal(init?.body ?? null, null);
+			return new Response(JSON.stringify({ sent: true }), { status: 200 });
+		};
+
+		const result = await fetcher.post<{ sent: boolean }>("/send").fetch();
+		const typed = fetcher.post<object, { name: string }>("/send");
+		const body: Parameters<typeof typed.fetch>[0] = { name: "Alice" };
+		// @ts-expect-error a declared body cannot be left out
+		await typed.fetch();
+		await fetcher
+			.post<object>("/send")
+			// @ts-expect-error the options come after the body, even when there is none
+			.fetch({ signal: AbortSignal.timeout(1000) })
+			.catch(() => undefined);
+		await fetcher.post<object>("/send").fetch(undefined, { headers: {} });
+
+		assert.deepEqual([result, body], [{ sent: true }, { name: "Alice" }]);
 	});
 
 	test("fetch: should let its headers win and ignore a body among its options", async () => {

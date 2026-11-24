@@ -82,6 +82,8 @@ jobs:
 
       - run: npx -y -p typescript@${{ matrix.typescript }} tsc -p examples/hydra-prefix
 
+      - run: npx -y -p typescript@${{ matrix.typescript }} tsc -p examples/generated
+
   integration:
     name: API Platform ${{ matrix.api-platform }}
     runs-on: ubuntu-latest

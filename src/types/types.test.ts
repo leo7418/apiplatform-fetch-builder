@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import entityServiceBuilder, {
 	type EntityService,
 } from "../lib/entity-service-builder.ts";
-import fetchBuilder from "../lib/fetch-builder.ts";
+import fetchBuilder, { type QueryOptions } from "../lib/fetch-builder.ts";
 import type { ReplaceBody, WriteBody } from "./body.ts";
 import type { Collection, PartialCollection } from "./collection.ts";
 import type { AbsoluteIri, AnyIri, GetIri, Iri, IriId } from "./iri.ts";
 import type { Embedded, Item } from "./item.ts";
 import type { PropertyPath } from "./property-path.ts";
-import type { PropertyValue } from "./property-value.ts";
+import type { PropertyValue, Read } from "./property-value.ts";
 
 type Equal<A, B> =
 	(<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -18,6 +18,9 @@ type Equal<A, B> =
 		: false;
 
 type Alike<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loose = any;
 
 type CompanyIri = Iri<"api/companies", string>;
 type Company = Item<{ name: string; city: string }, CompanyIri>;
@@ -101,6 +104,133 @@ describe("types", () => {
 			urls[0],
 			"https://example.com/api/users?order%5Bcompany.name%5D=ASC&name=Alice&exists%5Bemail%5D=true",
 		);
+	});
+
+	test("generic code should use what a service or a fetcher reads", async () => {
+		respond({ name: "Alice", member: [{ name: "Bob" }], totalItems: 1 });
+		type Named = { name: string };
+		const nameOf = async <I extends AnyIri, T extends Named>(
+			service: EntityService<I, T>,
+			id: IriId<I>,
+		): Promise<string> => (await service.get(id)).name;
+		const listed = async <I extends AnyIri, T extends Named>(
+			service: EntityService<I, T>,
+		): Promise<[number, string[]]> => {
+			const page = await service.getAll({ pageIndex: 1, pageSize: 20 });
+			const all = await service.getAllPages();
+			return [
+				page.totalItems,
+				[...page.member, ...all.member].map((member) => member.name),
+			];
+		};
+		const getJson = <T extends object>(url: string): Promise<T> =>
+			api.get<T>(url).fetch();
+		const members = async <I extends AnyIri, T extends Named>(
+			url: string,
+		): Promise<string[]> =>
+			(await api.get<Collection<T, I>>(url).fetch()).member.map(
+				(member) => member.name,
+			);
+		const users = entityServiceBuilder<UserIri, User>(api, "/users");
+
+		assert.deepEqual(
+			[
+				await nameOf(users, 1),
+				await listed(users),
+				(await getJson<Named>("/users/1")).name,
+				await members<UserIri, User>("/users"),
+			],
+			["Alice", [1, ["Bob", "Bob"]], "Alice", ["Bob"]],
+		);
+	});
+
+	test("generic code should forward a selection to a service", async () => {
+		respond({
+			"@id": "/api/users/1",
+			name: "Alice",
+			member: [],
+			totalItems: 0,
+		});
+		const select = <
+			I extends AnyIri,
+			T extends object,
+			P extends PropertyPath<Item<T, I>>[],
+		>(
+			service: EntityService<I, T>,
+			id: IriId<I>,
+			query: QueryOptions<Item<T, I>, P>,
+		): Promise<PropertyValue<Item<T, I>, P[number]>> => service.get(id, query);
+		const list = <
+			I extends AnyIri,
+			T extends object,
+			P extends PropertyPath<Collection<T, I>>[],
+		>(
+			service: EntityService<I, T>,
+			query: QueryOptions<Collection<T, I>, P>,
+		): Promise<PropertyValue<Collection<T, I>, P[number]>> =>
+			service.getAll(query);
+		const users = entityServiceBuilder<UserIri, User>(api, "/users");
+
+		const one = await select(users, 1, { properties: ["name"] });
+		const page = await list(users, { properties: ["name"] });
+		const name: string = one.name;
+
+		assert.deepEqual([name, page.member], ["Alice", []]);
+	});
+
+	test("a model without a writable property should refuse every property in a write", async () => {
+		respond({ "@id": "/api/pages/1", "@type": "Page" });
+		type Page = { readonly id: number; readonly title: string };
+		const pages = entityServiceBuilder<Iri<"api/pages">, Page>(api, "/pages");
+
+		const empty: WriteBody<Page> = {};
+		// @ts-expect-error a readonly property cannot be written
+		const named: WriteBody<Page> = { title: "Home" };
+		// @ts-expect-error nor a property the model does not have
+		const stranger: WriteBody<Page> = { nonsense: true };
+		const extended: WriteBody<Page> & { secret?: string } = { secret: "x" };
+		// @ts-expect-error a service refuses them as well
+		await pages.update(1, { title: "Home" });
+
+		assert.deepEqual(
+			[empty, named, stranger, extended],
+			[{}, { title: "Home" }, { nonsense: true }, { secret: "x" }],
+		);
+	});
+
+	test("generic code should name what a read resolves with", async () => {
+		respond({ "@id": "/api/users/1", name: "Alice" });
+		const load = <I extends AnyIri, T extends object>(
+			service: EntityService<I, T>,
+			id: IriId<I>,
+		): Promise<Item<Read<T>, I>> => service.get(id);
+
+		const user = await load(
+			entityServiceBuilder<UserIri, User>(api, "/users"),
+			1,
+		);
+		const company: CompanyIri = user.company;
+
+		assert.deepEqual([user.name, company], ["Alice", undefined]);
+	});
+
+	test("a model typed any should stay any", async () => {
+		respond({ member: [{ name: "Alice" }], totalItems: 1 });
+		const loose = entityServiceBuilder<UserIri, Loose>(api, "/users");
+
+		const page = await api
+			.get<Collection<Loose>>("/users")
+			.withQuery({ sortBy: [{ id: "name", desc: false }] })
+			.fetch();
+		const members: User[] = page.member;
+		const item: User = await api.get<Item<Loose, UserIri>>("/users/1").fetch();
+		const listed = await loose.getAll();
+		const names: string[] = listed.member.map((user: User) => user.name);
+		const read: User = await loose.get(1);
+		const checks: [Equal<Item<Loose, UserIri>, Loose>] = [true];
+
+		assert.deepEqual([members.length, names], [1, ["Alice"]]);
+		assert.ok(item && read && checks.every(Boolean));
 	});
 
 	test("selected properties should narrow the response", async () => {
@@ -202,7 +332,7 @@ describe("types", () => {
 
 		const checks: [
 			Equal<Selected<"owner.name">["owner"]["@id"], CompanyIri>,
-			Equal<Selected<"owner.name">["owner"]["@type"], string>,
+			Equal<Selected<"owner.name">["owner"]["@type"], string | string[]>,
 			Equal<Selected<"owner.name">["owner"]["name"], string>,
 			0 extends 1 & Selected<"payload">["payload"] ? true : false,
 			0 extends 1 & Selected<PropertyPath<Tasks>>["payload"] ? true : false,
@@ -279,20 +409,77 @@ describe("types", () => {
 		assert.ok(checks.every(Boolean));
 	});
 
-	test("a response without selected properties should keep its declared type", async () => {
-		respond({ member: [], totalItems: 0 });
+	test("a service should read a relation as its IRI without selected properties, and a fetcher keep the type it is given", async () => {
+		respond({ "@id": "/api/tasks/1", member: [], totalItems: 0 });
+		type Task = {
+			title: string;
+			owner?: User | UserIri;
+			watchers: (User | UserIri)[];
+			reviewer: Embedded<{ name: string }, UserIri> | null;
+			company: Company | CompanyIri | null;
+			position: [number, number];
+			path: [string, ...number[]];
+			tags: readonly string[];
+		};
+		type TaskIri = Iri<"api/tasks">;
+		const tasks = entityServiceBuilder<TaskIri, Task>(api, "/tasks");
 
 		const users = await api
 			.get<Users>("/users")
 			.withQuery({ sortBy: [{ id: "name", desc: false }] })
 			.fetch();
-		const check: Equal<
-			(typeof users.member)[number]["company"],
-			Company | CompanyIri
-		> = true;
+		const page = await api.get<Collection<Task, TaskIri>>("/tasks").fetch();
+		const task = await tasks.get(1);
+		const created = await tasks.create({ title: "Review" });
+		const all = await tasks.getAllPages();
+		const selected = await tasks.get(1, { properties: ["owner.name"] });
+		const sorted = await tasks.getAll({
+			sortBy: [{ id: "title", desc: true }],
+		});
+		const read = await api.get<Item<Read<Task>, TaskIri>>("/tasks/1").fetch();
+		const checks: [
+			Equal<(typeof users.member)[number]["company"], Company | CompanyIri>,
+			Equal<(typeof page.member)[number]["owner"], User | UserIri | undefined>,
+			Equal<(typeof read)["owner"], UserIri | undefined>,
+			Equal<(typeof sorted.member)[number]["owner"], UserIri | undefined>,
+			Equal<(typeof task)["position"], [number, number]>,
+			Equal<(typeof task)["path"], [string, ...number[]]>,
+			Equal<(typeof task)["tags"], readonly string[]>,
+			Equal<(typeof task)["owner"], UserIri | undefined>,
+			Equal<(typeof task)["watchers"], UserIri[]>,
+			Equal<
+				(typeof task)["reviewer"],
+				Embedded<{ name: string }, UserIri> | null
+			>,
+			Equal<(typeof task)["company"], CompanyIri | null>,
+			Equal<(typeof task)["@id"], TaskIri>,
+			Equal<(typeof created)["owner"], UserIri | undefined>,
+			Equal<(typeof all.member)[number]["watchers"], UserIri[]>,
+			Equal<NonNullable<(typeof selected)["owner"]>["name"], string>,
+		] = [
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+		];
+		await tasks.update({ ...task, title: "Sent back" });
 
-		assert.deepEqual(users.member, []);
-		assert.ok(check);
+		assert.deepEqual(
+			[users.member, page.member, all.member, sorted.member],
+			[[], [], [], []],
+		);
+		assert.ok(created && selected && read && checks.every(Boolean));
 	});
 
 	test("a partial collection should have no total", () => {
@@ -361,14 +548,14 @@ describe("types", () => {
 			Equal<
 				Sent["owner"],
 				| AnyIri
-				| { "@id": AnyIri; "@type"?: string }
+				| { "@id": AnyIri; "@type"?: string | string[] }
 				| ({ name?: string } & object)
 				| undefined
 			>,
 			Equal<
 				Sent["address"],
 				| AnyIri
-				| { "@id": AnyIri; "@type"?: string }
+				| { "@id": AnyIri; "@type"?: string | string[] }
 				| ({ city?: string } & object)
 				| undefined
 			>,
@@ -449,7 +636,7 @@ describe("types", () => {
 			status: string;
 			address:
 				| AnyIri
-				| { "@id": AnyIri; "@type"?: string }
+				| { "@id": AnyIri; "@type"?: string | string[] }
 				| ({ city: string; zip?: string | null } & object);
 			subtitle?: string | null;
 			summary?: string | null;
@@ -823,6 +1010,10 @@ describe("types", () => {
 		const email: string = (await users.get(1)).email;
 		// @ts-expect-error the collection does not return the email
 		await users.getAll({ properties: ["email"] });
+		await users.getAll({ sortBy: [{ id: "email", desc: true }] });
+		await users.getAllPages({ sortBy: [{ id: "company.name", desc: false }] });
+		// @ts-expect-error sorting takes a property of the entity or of the collection
+		await users.getAll({ sortBy: [{ id: "unknown", desc: true }] });
 		await users.create({ name: "Alice", email: "alice@example.com" });
 
 		assert.ok(checks.every(Boolean));
