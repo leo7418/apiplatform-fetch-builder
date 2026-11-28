@@ -27,7 +27,7 @@ class User
     #[ORM\Column]
     public string $email = '';
 
-    #[ORM\ManyToOne]
+    #[ORM\ManyToOne(inversedBy: 'users')]
     public ?Company $company = null;
 
     public function getId(): ?int

@@ -6,7 +6,7 @@ import type { Collection, PartialCollection } from "../types/collection.ts";
 import type { AnyIri, IriId } from "../types/iri.ts";
 import type { Item } from "../types/item.ts";
 import type { PropertyPath } from "../types/property-path.ts";
-import type { PropertyValue } from "../types/property-value.ts";
+import type { PropertyValue, Read } from "../types/property-value.ts";
 
 export type GetAllPagesProgress = {
 	page: number;
@@ -47,6 +47,8 @@ export type EntityServiceOptions = {
 	output?: false;
 	/** Body of the write operations, when it is not the one deduced from the entity. */
 	body?: object;
+	/** Model of the members of the collection, when the API serializes them differently from an item. */
+	collection?: object;
 };
 
 type Option<
@@ -71,15 +73,19 @@ type Collections<Entity, EntityIri extends AnyIri> = {
 	partial: PartialCollection<Entity, EntityIri>;
 };
 
-type Listed<EntityIri extends AnyIri, Entity, Options> = Collections<
-	Entity,
+type Member<Entity, Options> = [Option<Options, "collection">] extends [never]
+	? Entity
+	: Option<Options, "collection">;
+
+type Listed<EntityIri extends AnyIri, Model, Options> = Collections<
+	Model,
 	EntityIri
 >[[Option<Options, "pagination">] extends [never] ? "full" : "partial"];
 
 type Written<EntityIri extends AnyIri, Entity, Options> = [
 	Option<Options, "output">,
 ] extends [never]
-	? Item<Entity, EntityIri>
+	? Item<Read<Entity>, EntityIri>
 	: null;
 
 export type EntityService<
@@ -91,17 +97,39 @@ export type EntityService<
 		body: BodyOf<Entity, Options>,
 	) => Promise<Written<EntityIri, Entity, Options>>;
 	get: {
-		(iriOrId: EntityIri | IriId<EntityIri>): Promise<Item<Entity, EntityIri>>;
-		<P extends PropertyPath<Item<Entity, EntityIri>>[] = []>(
+		(
+			iriOrId: EntityIri | IriId<EntityIri>,
+			query?: QueryOptions<Item<Entity, EntityIri>, []>,
+		): Promise<Item<Read<Entity>, EntityIri>>;
+		<P extends PropertyPath<Item<Entity, EntityIri>>[]>(
 			iriOrId: EntityIri | IriId<EntityIri>,
 			query: QueryOptions<Item<Entity, EntityIri>, P>,
 		): Promise<PropertyValue<Item<Entity, EntityIri>, P[number]>>;
 	};
 	getAll: {
-		(): Promise<Listed<EntityIri, Entity, Options>>;
-		<P extends PropertyPath<Listed<EntityIri, Entity, Options>>[] = []>(
-			query: QueryOptions<Listed<EntityIri, Entity, Options>, P>,
-		): Promise<PropertyValue<Listed<EntityIri, Entity, Options>, P[number]>>;
+		(
+			query?: QueryOptions<
+				Listed<EntityIri, Member<Entity, Options>, Options>,
+				[],
+				Collection<Entity | Member<Entity, Options>, EntityIri>
+			>,
+		): Promise<Listed<EntityIri, Read<Member<Entity, Options>>, Options>>;
+		<
+			P extends PropertyPath<
+				Listed<EntityIri, Member<Entity, Options>, Options>
+			>[],
+		>(
+			query: QueryOptions<
+				Listed<EntityIri, Member<Entity, Options>, Options>,
+				P,
+				Collection<Entity | Member<Entity, Options>, EntityIri>
+			>,
+		): Promise<
+			PropertyValue<
+				Listed<EntityIri, Member<Entity, Options>, Options>,
+				P[number]
+			>
+		>;
 	};
 	update: {
 		(
@@ -135,14 +163,20 @@ export type EntityService<
 			| ObjectWithId<PatchBodyOf<Entity, Options>, EntityIri, OwnId<Entity>>,
 	) => Promise<Written<EntityIri, Entity, Options>>;
 	getAllPages: {
-		(onProgress?: OnProgress): Promise<Collection<Entity, EntityIri>>;
+		(
+			onProgress?: OnProgress,
+		): Promise<Collection<Read<Member<Entity, Options>>, EntityIri>>;
 		(
 			query: Omit<
-				QueryOptions<Collection<Entity, EntityIri>, never[]>,
+				QueryOptions<
+					Collection<Member<Entity, Options>, EntityIri>,
+					never[],
+					Collection<Entity | Member<Entity, Options>, EntityIri>
+				>,
 				"pagination" | "pageIndex"
 			>,
 			onProgress?: OnProgress,
-		): Promise<Collection<Entity, EntityIri>>;
+		): Promise<Collection<Read<Member<Entity, Options>>, EntityIri>>;
 	};
 	delete: (idOrIri: EntityIri | IriId<EntityIri>) => Promise<null>;
 };
@@ -153,6 +187,11 @@ const API_CONTEXT = /\/contexts\/[^/]+$/;
 const ORIGIN = /^(?:[a-z][a-z\d+.-]*:)?\/\/[^/]*/i;
 
 const originOf = (iri: string) => ORIGIN.exec(iri)?.[0] ?? "";
+
+const targetOf = (body: { "@id"?: unknown; id?: unknown }): unknown =>
+	typeof body["@id"] === "string" && GENERATED_ID.test(body["@id"])
+		? body.id
+		: body["@id"] || body.id;
 
 const decode = (segment: string) => {
 	try {
@@ -276,7 +315,7 @@ const entityServiceBuilder = <
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
-				? idOrIriOrBody["@id"] || idOrIriOrBody.id
+				? targetOf(idOrIriOrBody)
 				: idOrIriOrBody;
 		const body = toBody(
 			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
@@ -299,7 +338,7 @@ const entityServiceBuilder = <
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
-				? idOrIriOrBody["@id"] || idOrIriOrBody.id
+				? targetOf(idOrIriOrBody)
 				: idOrIriOrBody;
 		const body = toBody(
 			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
@@ -317,10 +356,7 @@ const entityServiceBuilder = <
 	const upsert = (
 		body: EntityBody | ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>,
 	): Promise<Item<Entity, EntityIri>> => {
-		const id =
-			(body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>)[
-				"@id"
-			] || (body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>).id;
+		const id = targetOf(body as { "@id"?: unknown; id?: unknown });
 
 		return id == null || id === ""
 			? create(body as EntityBody)

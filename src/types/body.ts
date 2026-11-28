@@ -14,7 +14,7 @@ type Keyword<K> = K extends "@id" ? never : K extends `@${string}` ? K : never;
 
 type Relation<T, Whole, I> =
 	| I
-	| { "@id": I; "@type"?: string }
+	| { "@id": I; "@type"?: string | string[] }
 	| (Fields<T, Whole, true> & { "@id"?: I | undefined });
 
 type SentValue<T, Whole, Declared> = T extends Leaf
@@ -29,7 +29,7 @@ type SentValue<T, Whole, Declared> = T extends Leaf
 				? [Declared] extends [never]
 					?
 							| AnyIri
-							| { "@id": AnyIri; "@type"?: string }
+							| { "@id": AnyIri; "@type"?: string | string[] }
 							| (Fields<T, Whole, true> & object)
 					: Relation<T, Whole, Declared>
 				: T;
@@ -60,16 +60,23 @@ type Fields<T, Whole, Nested> = Flatten<
 	}
 >;
 
+type Root<T, Whole> =
+	Fields<T, Whole, false> extends infer Body
+		? [keyof Body] extends [never]
+			? { [K in keyof T as K extends `@${string}` ? never : K]?: never }
+			: Body
+		: never;
+
 /** Body of a `POST` or a `PATCH`: every property optional, no `readonly` property, a relation as its IRI or as an object. */
 export type WriteBody<T> = T extends readonly (infer U)[]
 	? readonly WriteBody<U>[]
 	: T extends unknown
-		? Fields<T, false, false>
+		? Root<T, false>
 		: never;
 
 /** Body of a `PUT`: a `WriteBody` where every property that is not nullable is required. */
 export type ReplaceBody<T> = T extends readonly (infer U)[]
 	? readonly ReplaceBody<U>[]
 	: T extends unknown
-		? Fields<T, true, false>
+		? Root<T, true>
 		: never;

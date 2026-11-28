@@ -7,7 +7,7 @@ export type { HydraError } from "./types/error.ts";
 export type { Embedded, Item } from "./types/item.ts";
 export type { AbsoluteIri, AnyIri, Iri, IriId } from "./types/iri.ts";
 export type { PropertyPath } from "./types/property-path.ts";
-export type { PropertyValue } from "./types/property-value.ts";
+export type { PropertyValue, Read } from "./types/property-value.ts";
 export type { Register } from "./types/register.ts";
 export type {
 	BodyBuilder,

@@ -533,6 +533,33 @@ describe("entityServiceBuilder", () => {
 		]);
 	});
 
+	test("should reach an item by its id when the API generated its @id", async () => {
+		const { entityService } = makeService();
+		const requests: string[] = [];
+		global.fetch = async (input, init) => {
+			requests.push(`${init?.method} ${String(input)}`);
+			return new Response(JSON.stringify({}), { status: 200 });
+		};
+		const generated = "/.well-known/genid/abc" as EntityIri;
+		const read = { "@id": generated, "@type": "Entity", id: 3, name: "Read" };
+
+		await entityService.update(read);
+		await entityService.replace(read);
+		await entityService.upsert(read);
+		await entityService.upsert({ "@id": generated, name: "New" });
+		await assert.rejects(
+			entityService.update({ "@id": generated, name: "Lost" }),
+			TypeError,
+		);
+
+		assert.deepEqual(requests, [
+			"PATCH https://example.com/entities/3",
+			"PUT https://example.com/entities/3",
+			"PATCH https://example.com/entities/3",
+			"POST https://example.com/entities",
+		]);
+	});
+
 	test("should replace an entity by Iri", async () => {
 		const { entityService } = makeService();
 		const iri: EntityIri = "/entities/1";

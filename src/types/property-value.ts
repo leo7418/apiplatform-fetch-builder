@@ -41,16 +41,26 @@ type ItemOrIri<T, Ancestors> =
 						| Exclude<T, object | GetIri<T>>
 						| BackReference<GetIri<T>, Ancestors>;
 
-type Reference<T> = [GetIri<T>] extends [never] ? T : Exclude<T, object>;
-
-type WholeList<T> = T extends readonly (infer U)[] ? Whole<U>[] : never;
+type WholeMember<T, HasIri> = T extends readonly (infer U)[]
+	? number extends T["length"]
+		? T extends
+				| readonly [unknown, ...unknown[]]
+				| readonly [...unknown[], unknown]
+			? { [K in keyof T]: Whole<T[K]> }
+			: T extends unknown[]
+				? Whole<U>[]
+				: readonly Whole<U>[]
+		: { [K in keyof T]: Whole<T[K]> }
+	: HasIri extends true
+		? T extends object
+			? never
+			: T
+		: T;
 
 type Whole<T> =
 	IsAny<T> extends true
 		? T
-		:
-				| WholeList<Extract<T, readonly unknown[]>>
-				| Reference<Exclude<T, readonly unknown[]>>;
+		: WholeMember<T, [GetIri<T>] extends [never] ? false : true>;
 
 type RelationIri<T> = GetIri<T extends readonly (infer U)[] ? U : T>;
 
@@ -93,6 +103,11 @@ type KeepHydra<In extends object, Out extends object> =
 				: In extends readonly unknown[]
 					? Out[]
 					: Out;
+
+/** A model read without a selection: at its first level, a relation declared as its item or its IRI is the IRI. */
+export type Read<T> = unknown extends T
+	? T
+	: { [K in keyof T]: Whole<T[K]> } & {};
 
 type SafeRoot<T> = T extends readonly (infer U)[]
 	? U

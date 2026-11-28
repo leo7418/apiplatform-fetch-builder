@@ -30,6 +30,8 @@ jobs:
 
       - run: pnpm build
 
+      - run: node dist/cli/main.js --help
+
   node:
     name: Node ${{ matrix.node }}
     runs-on: ubuntu-latest
@@ -80,6 +82,8 @@ jobs:
 
       - run: npx -y -p typescript@${{ matrix.typescript }} tsc -p examples/hydra-prefix
 
+      - run: npx -y -p typescript@${{ matrix.typescript }} tsc -p examples/generated
+
   integration:
     name: API Platform ${{ matrix.api-platform }}
     runs-on: ubuntu-latest
@@ -101,6 +105,4 @@ jobs:
         with:
           node-version: "22.x"
 
-      - run: composer update --working-dir=integration/api --with "api-platform/core:~${{ matrix.api-platform }}.0" --no-interaction --no-progress
-
-      - run: integration/run.sh
+      - run: integration/run.sh ${{ matrix.api-platform }}

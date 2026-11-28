@@ -43,4 +43,10 @@ export type Task = {
 
 export const api = fetchBuilder(API_URL);
 export const users = entityServiceBuilder<UserIri, User>(api, "/users");
-export const tasks = entityServiceBuilder<TaskIri, Task>(api, "/tasks");
+export type TaskList = { readonly id: number; title: string; status: string };
+
+export const tasks = entityServiceBuilder<
+	TaskIri,
+	Task,
+	{ collection: TaskList }
+>(api, "/tasks");
