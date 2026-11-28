@@ -62,6 +62,22 @@ describe("types", () => {
 		assert.ok(checks.every(Boolean));
 	});
 
+	test("an IRI of any path should take a path of several segments, in a service and in a collection typed without its IRI", () => {
+		type TagIri = Iri<string, string | number>;
+		const tags = entityServiceBuilder<TagIri, { name: string }>(api, "/tags");
+		const read = () => [tags.get(1), tags.get("/api/v2/tags/1")];
+		const first = (list: Collection<{ name: string }>) =>
+			list.member[0]["@id"] === "/api/v2/tags/1";
+		const checks: [
+			Equal<"/api/v2/tags/1" extends TagIri ? true : false, true>,
+			Equal<IriId<TagIri>, string | number>,
+			Equal<Collection<{ name: string }>["member"][number]["@id"], AnyIri>,
+		] = [true, true, true];
+
+		assert.ok(checks.every(Boolean));
+		assert.equal(typeof read, typeof first);
+	});
+
 	test("PropertyPath should accept the paths of the resource only", () => {
 		const paths: PropertyPath<Users>[] = [
 			"name",

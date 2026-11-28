@@ -243,7 +243,7 @@ export type Book = {
 };
 
 // As a service: entityServiceBuilder<LogIri, Log>(api, "/api/logs")
-export type LogIri = Iri<"api/logs">;
+export type LogIri = Iri<string, string | number>;
 export type Log = {
 	readonly id: number;
 	readonly message: string;
@@ -349,7 +349,7 @@ describe("generateTypes", () => {
 
 		assert.match(
 			generateTypes(listed),
-			/export type EventIri = Iri<"events", string \| number>;\nexport type Event = \{\n\treadonly name: string;\n\};/,
+			/export type EventIri = Iri<string, string \| number>;\nexport type Event = \{\n\treadonly name: string;\n\};/,
 		);
 	});
 
@@ -855,7 +855,7 @@ export type AccountRegisterBody = {
 };
 
 // As a service: entityServiceBuilder<ReviewIri, Review>(api, "/reviews")
-export type ReviewIri = Iri<"reviews", string | number>;
+export type ReviewIri = Iri<string, string | number>;
 export type Review = {
 	body: string;
 };
@@ -893,66 +893,66 @@ export type Review = {
 		const text = { type: "string" };
 		const validated: OpenApiDocument = {
 			paths: {
-				"/devices": {
+				"/products": {
 					post: {
 						requestBody: content(
-							"Device-device.create_validation.device.create",
+							"Product-product.create_validation.product.create",
 						),
 						responses: {
-							"201": content("Device.jsonld-validation.device.create"),
+							"201": content("Product.jsonld-validation.product.create"),
 						},
 					},
 				},
-				"/devices/{id}": {
-					...item("Device.jsonld"),
-					put: { requestBody: content("Device") },
+				"/products/{id}": {
+					...item("Product.jsonld"),
+					put: { requestBody: content("Product") },
 				},
-				"/devices/replace": {
+				"/products/import": {
 					post: {
-						requestBody: content("Device-validation.device.replace"),
+						requestBody: content("Product-validation.product.import"),
 						responses: {
-							"201": content("Device.jsonld-validation.device.replace"),
+							"201": content("Product.jsonld-validation.product.import"),
 						},
 					},
 				},
-				"/admin/devices": {
-					...listed("Device.jsonld-admin.read"),
+				"/admin/products": {
+					...listed("Product.jsonld-admin.read"),
 					post: {
 						responses: {
-							"201": content("Device.jsonld-admin.read_validation.admin"),
+							"201": content("Product.jsonld-admin.read_validation.admin"),
 						},
 					},
 				},
 			},
 			components: {
 				schemas: {
-					"Device.jsonld": {
+					"Product.jsonld": {
 						type: "object",
 						properties: { kind: text, name: text },
 					},
-					"Device.jsonld-validation.device.create": {
+					"Product.jsonld-validation.product.create": {
 						type: "object",
 						required: ["kind"],
 						properties: { kind: { ...text, enum: ["a", "b"] }, name: text },
 					},
-					"Device.jsonld-validation.device.replace": {
+					"Product.jsonld-validation.product.import": {
 						type: "object",
 						properties: { kind: { ...text, enum: ["c"] }, name: text },
 					},
-					"Device-device.create_validation.device.create": {
+					"Product-product.create_validation.product.create": {
 						type: "object",
 						properties: { kind: { ...text, enum: ["a", "b"] } },
 					},
-					Device: { type: "object", properties: { kind: text, name: text } },
-					"Device-validation.device.replace": {
+					Product: { type: "object", properties: { kind: text, name: text } },
+					"Product-validation.product.import": {
 						type: "object",
 						properties: { kind: { ...text, enum: ["c"] }, name: text },
 					},
-					"Device.jsonld-admin.read": {
+					"Product.jsonld-admin.read": {
 						type: "object",
 						properties: { kind: text, secret: text },
 					},
-					"Device.jsonld-admin.read_validation.admin": {
+					"Product.jsonld-admin.read_validation.admin": {
 						type: "object",
 						properties: { kind: { ...text, enum: ["a"] }, secret: text },
 					},
@@ -963,11 +963,11 @@ export type Review = {
 
 		assert.deepEqual(
 			[...generated.matchAll(/export type (\w+) = /g)].map(([, name]) => name),
-			["DeviceIri", "Device", "DeviceAdminRead"],
+			["ProductIri", "Product", "ProductAdminRead"],
 		);
 		assert.match(
 			generated,
-			/\/\*\* Returned by GET \/admin\/devices, POST \/admin\/devices\. \*\/\nexport type DeviceAdminRead = /,
+			/\/\*\* Returned by GET \/admin\/products, POST \/admin\/products\. \*\/\nexport type ProductAdminRead = /,
 		);
 	});
 
@@ -1207,13 +1207,13 @@ export type Review = {
 		const text = { type: "string" };
 		const plain: OpenApiDocument = {
 			paths: {
-				"/sensors/{id}": item("Sensor.jsonld"),
-				"/partner/sensors/{id}": {
+				"/books/{id}": item("Book.jsonld"),
+				"/public/books/{id}": {
 					get: {
 						responses: {
 							"200": {
 								content: {
-									"application/json": { schema: reference("Sensor-partner") },
+									"application/json": { schema: reference("Book-public") },
 								},
 							},
 						},
@@ -1223,23 +1223,23 @@ export type Review = {
 			},
 			components: {
 				schemas: {
-					"Sensor.jsonld": {
+					"Book.jsonld": {
 						type: "object",
 						properties: { name: text, owner: reference("User.jsonld") },
 					},
-					"Sensor-partner": {
+					"Book-public": {
 						type: "object",
-						properties: { name: text, owner: reference("User-partner") },
+						properties: { name: text, owner: reference("User-public") },
 					},
 					"User.jsonld": { type: "object", properties: { name: text } },
-					"User-partner": { type: "object", properties: { name: text } },
+					"User-public": { type: "object", properties: { name: text } },
 				},
 			},
 		};
 
 		assert.match(
 			generateTypes(plain),
-			/\/\*\* Returned in plain JSON by GET \/partner\/sensors\/\{id\}\. \*\/\nexport type SensorPartner = \{\n\treadonly name: string;\n\treadonly owner: \{\n\t\tname: string;\n\t\};\n\};/,
+			/\/\*\* Returned in plain JSON by GET \/public\/books\/\{id\}\. \*\/\nexport type BookPublic = \{\n\treadonly name: string;\n\treadonly owner: \{\n\t\tname: string;\n\t\};\n\};/,
 		);
 	});
 
@@ -1299,6 +1299,102 @@ export type Review = {
 
 		assert.match(generated, /\/\*\* Returned by GET \/stats\*\\\/x\. \*\//);
 		assert.match(generated, /\treadonly kind\?: string;/);
+	});
+
+	test("should read a resource without an item route on its own collection, or else on a creation route, with an IRI of any path and a body for each other creation route", () => {
+		const text = { type: "string" };
+		const created = (body: string, returned = "Subscription.jsonld") => ({
+			post: {
+				requestBody: content(body),
+				responses: { "201": content(returned) },
+			},
+		});
+		const generated = generateTypes({
+			paths: {
+				"/authors/{id}/logs": listed("Log.jsonld"),
+				"/imports/logs": created("Log-import", "Log.jsonld"),
+				"/logs": listed("Log.jsonld"),
+				"/logs/replay": created("Log-replay", "Log.jsonld"),
+				"/subscriptions/open": created("Subscription-open"),
+				"/subscriptions/renew": created("Subscription-renew"),
+			},
+			components: {
+				schemas: {
+					"Subscription.jsonld": {
+						type: "object",
+						properties: { email: text },
+					},
+					"Subscription-open": { type: "object", properties: { email: text } },
+					"Subscription-renew": { type: "object", properties: { token: text } },
+					"Log.jsonld": { type: "object", properties: { text } },
+					"Log-import": { type: "object", properties: { file: text } },
+					"Log-replay": { type: "object", properties: { since: text } },
+				},
+			},
+		});
+
+		assert.match(
+			generated,
+			/\/\/ As a service: entityServiceBuilder<LogIri, Log>\(api, "\/logs"\)\nexport type LogIri = Iri<string, string \| number>;/,
+		);
+		assert.match(
+			generated,
+			/\/\*\* Taken by POST \/imports\/logs\. \*\/\nexport type LogImportBody = \{\n\tfile\?: string;\n\};/,
+		);
+		assert.match(
+			generated,
+			/\/\*\* Taken by POST \/logs\/replay\. \*\/\nexport type LogReplayBody = \{\n\tsince\?: string;\n\};/,
+		);
+		assert.match(
+			generated,
+			/\/\/ As a service: entityServiceBuilder<SubscriptionIri, Subscription>\(api, "\/subscriptions\/open"\)\nexport type SubscriptionIri = Iri<string, string \| number>;/,
+		);
+		assert.match(
+			generated,
+			/\/\*\* Taken by POST \/subscriptions\/renew\. \*\/\nexport type SubscriptionRenewBody = \{\n\ttoken\?: string;\n\};/,
+		);
+	});
+
+	test("should not take a route that returns another class for a resource of its own", () => {
+		const text = { type: "string" };
+		const action: OpenApiDocument = {
+			paths: {
+				"/users/{id}": item("User.jsonld"),
+				"/visitors/register": {
+					post: {
+						requestBody: content("Visitor-visitor.register"),
+						responses: { "201": content("Visitor.User.jsonld-user.read") },
+					},
+				},
+			},
+			components: {
+				schemas: {
+					"User.jsonld": {
+						type: "object",
+						properties: { email: text, name: text },
+					},
+					"Visitor-visitor.register": {
+						type: "object",
+						properties: { code: text, email: text },
+					},
+					"Visitor.User.jsonld-user.read": {
+						type: "object",
+						properties: { email: text },
+					},
+				},
+			},
+		};
+		const generated = generateTypes(action);
+
+		assert.doesNotMatch(generated, /VisitorIri/);
+		assert.match(
+			generated,
+			/\/\*\* Returned by POST \/visitors\/register\. \*\/\nexport type UserRead = \{\n\treadonly email: string;\n\};/,
+		);
+		assert.match(
+			generated,
+			/\/\*\* Taken by POST \/visitors\/register\. \*\/\nexport type Visitor = \{\n\tcode: string;\n\temail: string;\n\};/,
+		);
 	});
 
 	test("should find the target of a relation that a second declaration of a class exposes", () => {
@@ -1621,6 +1717,47 @@ export type Review = {
 							},
 							level: reference("Level"),
 							book: { ...iri },
+							code: { type: ["string", "integer", "null"] },
+							extras: {
+								type: ["object", "array"],
+								additionalProperties: { type: "string" },
+								items: { type: ["integer", "boolean"] },
+							},
+							reference: {
+								oneOf: [
+									{ type: ["string", "null"] },
+									{ type: ["integer", "null"] },
+								],
+							},
+							kind: { const: "member" },
+							nothing: { anyOf: [{ type: "string" }, { type: ["null"] }] },
+							cover: {
+								type: "object",
+								properties: {
+									width: { type: "integer" },
+									credit: { type: "string" },
+								},
+								required: ["width"],
+							},
+							place: {
+								allOf: [
+									reference("Place"),
+									{
+										type: "object",
+										properties: { floor: { type: "integer" } },
+									},
+								],
+							},
+							lone: { allOf: reference("Place") as never },
+							spot: {
+								allOf: [reference("Place"), { nullable: true }],
+							},
+							badges: {
+								anyOf: [
+									{ type: "object", additionalProperties: { type: "string" } },
+									{ type: "array", maxItems: 0 },
+								],
+							},
 						},
 					},
 					"Message.jsonld": {
@@ -1628,6 +1765,7 @@ export type Review = {
 						properties: { text: { type: "string" } },
 					},
 					Level: { type: "string", enum: ["gold", "silver"] },
+					Place: { type: "object", properties: { street: { type: "string" } } },
 				},
 			},
 		};
@@ -1662,13 +1800,34 @@ export type Member = {
 	labels: { [key: string]: string };
 	level: "gold" | "silver";
 	book: MessageIri;
+	code?: string | number;
+	extras: { [key: string]: string } | (number | boolean)[];
+	reference?: string | number;
+	kind: "member";
+	nothing?: string;
+	cover: {
+		width: number;
+		credit?: string;
+	};
+	place: {
+		street: string;
+	} & {
+		floor: number;
+	};
+	lone: {
+		street: string;
+	};
+	spot?: {
+		street: string;
+	};
+	badges: { [key: string]: string } | [];
 };
 export type MemberBody = WriteBody<Member> & {
 	plainPassword?: string | null;
 };
 
 // As a service: entityServiceBuilder<MessageIri, Message>(api, "/v2/messages")
-export type MessageIri = Iri<"v2/messages", string | number>;
+export type MessageIri = Iri<string, string | number>;
 export type Message = {
 	text: string;
 };
@@ -1804,15 +1963,347 @@ export type TaskStats = {
 		assert.match(generated, /\treadonly boss: Embedded<\{\}, UserIri>;/);
 	});
 
-	test("should accept both kinds of identifier when the API does not expose it", () => {
+	test("should accept both kinds of identifier when the API does not expose it, or gives it both types", () => {
 		const hidden: OpenApiDocument = {
-			paths: { "/logs/{id}": item("Log.jsonld") },
-			components: { schemas: { "Log.jsonld": { type: "object" } } },
+			paths: {
+				"/logs/{id}": item("Log.jsonld"),
+				"/entries/{id}": item("Entry.jsonld"),
+			},
+			components: {
+				schemas: {
+					"Log.jsonld": { type: "object" },
+					"Entry.jsonld": {
+						type: "object",
+						properties: { id: { type: ["integer", "string"] } },
+					},
+				},
+			},
+		};
+		const generated = generateTypes(hidden);
+
+		assert.match(
+			generated,
+			/export type LogIri = Iri<"logs", string \| number>;\nexport type Log = \{\};/,
+		);
+		assert.match(
+			generated,
+			/export type EntryIri = Iri<"entries", string \| number>;/,
+		);
+	});
+
+	test("should rename a type everywhere the file uses it", () => {
+		const generated = generateTypes(openApi, hydraDocument, false, {
+			rename: { Author: "Writer", AuthorIri: "WriterIri" },
+		});
+
+		assert.equal(
+			generated,
+			EXPECTED.replace(/\bAuthor\b/g, "Writer").replace(
+				/\bAuthorIri\b/g,
+				"WriterIri",
+			),
+		);
+		assert.match(generated, /export type WriterIri = Iri<"api\/authors">;/);
+	});
+
+	test("should write the names that hold other letters than plain ones, or a dollar sign", () => {
+		const generated = generateTypes(
+			{
+				paths: {
+					"/cafés/{id}": item("Café.jsonld"),
+					"/tables/{id}": item("Table.jsonld"),
+				},
+				components: {
+					schemas: {
+						"Café.jsonld": { type: "object", properties: { Café$ref: iri } },
+						"Table.jsonld": { type: "object", properties: { café: iri } },
+					},
+				},
+			},
+			{
+				supportedClass: [
+					{
+						"@id": "#Table",
+						title: "Table",
+						supportedProperty: [
+							{ title: "café", property: { range: "#Café" } },
+						],
+					},
+					{ "@id": "#Café", title: "Café" },
+				],
+			},
+			false,
+			{ rename: { Café: "Bistrot$" } },
+		);
+
+		assert.match(
+			generated,
+			/export type CaféIri = Iri<"cafés", string \| number>;\nexport type Bistrot\$ = \{\n\treadonly "Café\$ref": AnyIri;\n\};/,
+		);
+		assert.match(generated, /\treadonly "café": CaféIri;\n/);
+	});
+
+	test("should write the type given for a type or a property, the new names included", () => {
+		const generated = generateTypes(openApi, hydraDocument, false, {
+			rename: { Note: "Memo", NoteIri: "MemoIri" },
+			types: {
+				"Article.company": "string",
+				"Article.status": "'Note' | 'draft'",
+				"Article.seo.keywords?": "string[]",
+				"Log.readers.name": "string | null",
+				MemoIri: "Iri<'api/memos'>",
+				"Memo.text": "string | null",
+			},
+		});
+
+		assert.match(
+			generated,
+			/import type \{ Embedded, Iri, WriteBody \} from "apiplatform-fetch-builder";/,
+		);
+		assert.match(generated, /\tcompany\?: string;\n/);
+		assert.match(generated, /\tstatus: 'Note' \| 'draft';\n/);
+		assert.match(generated, /\t\tkeywords\?: string\[\];\n/);
+		assert.match(
+			generated,
+			/\treadonly readers: \(Embedded<\{ name: string \| null \}, AuthorIri>\)\[\];/,
+		);
+		assert.match(
+			generated,
+			/export type MemoIri = Iri<'api\/memos'>;\nexport type Memo = \{\n\treadonly text: string \| null;\n/,
+		);
+	});
+
+	test("should leave out the types and properties to skip, and the options of a service that names them", () => {
+		const generated = generateTypes(openApi, hydraDocument, false, {
+			skip: ["Note", "NoteIri", "ArticleBody", "Article.slug"],
+		});
+
+		assert.doesNotMatch(generated, /Note|ArticleBody|slug|WriteBody/);
+		assert.equal(
+			generateTypes(openApi, hydraDocument, false, {
+				skip: ["Note", "NoteIri", "ArticleBody", "Article.slug", "Note.text"],
+			}),
+			generated,
+		);
+		assert.match(
+			generated,
+			/\/\/ As a service: entityServiceBuilder<ArticleIri, Article>\(api, "\/api\/articles"\)\n/,
+		);
+		assert.throws(
+			() =>
+				generateTypes(openApi, hydraDocument, false, { skip: ["AuthorIri"] }),
+			{
+				message:
+					"Kept types use skipped ones: Article.author uses AuthorIri, Article.reviewers uses AuthorIri, Book.author uses AuthorIri, Log.author uses AuthorIri, Log.readers uses AuthorIri, Note.author uses AuthorIri",
+			},
+		);
+	});
+
+	test("should read a name that a generated type and a new name share as the generated one", () => {
+		const generated = generateTypes(openApi, hydraDocument, false, {
+			rename: { Note: "Book", NoteIri: "BookIri" },
+			types: { "Note.text": "'memo'" },
+			skip: ["Book", "BookIri"],
+		});
+
+		assert.doesNotMatch(generated, /isbn|Note/);
+		assert.match(
+			generated,
+			/\/\/ As a service: entityServiceBuilder<BookIri, Book>\(api, "\/api\/authors\/\{id\}\/notes"\)\nexport type BookIri = Iri<`api\/authors\/\$\{string\}\/notes`, string \| number>;\nexport type Book = \{\n\treadonly text: 'memo';\n\treadonly author: AuthorIri;\n\};/,
+		);
+	});
+
+	test("should read the names a hand-written type holds in a template, and none in a comment or after a dot", () => {
+		const types = {
+			"Article.slug": "`${NoteIri}/slug`",
+			"Log.message": "string /* not NoteIri */",
+			"Log.author.name": "string // not NoteIri, it doesn't count",
+			"Book.title": 'import("./notes").NoteIri | [...Author[]]',
 		};
 
 		assert.match(
-			generateTypes(hidden),
-			/export type LogIri = Iri<"logs", string \| number>;\nexport type Log = \{\};/,
+			generateTypes(openApi, hydraDocument, false, {
+				rename: { NoteIri: "MemoIri" },
+				types,
+			}),
+			/\treadonly slug: `\$\{MemoIri\}\/slug`;\n[^]*\treadonly message: string \/\* not NoteIri \*\/;\n/,
+		);
+		assert.match(
+			generateTypes(openApi, hydraDocument, false, {
+				rename: { NoteIri: "MemoIri", Author: "Writer" },
+				types,
+			}),
+			/\ttitle: import\("\.\/notes"\)\.NoteIri \| \[\.\.\.Writer\[\]\];\n/,
+		);
+		assert.throws(
+			() =>
+				generateTypes(openApi, hydraDocument, false, {
+					types,
+					skip: ["Note", "NoteIri"],
+				}),
+			{ message: "Kept types use skipped ones: Article.slug uses NoteIri" },
+		);
+		assert.match(
+			generateTypes(openApi, hydraDocument, false, {
+				types: { Author: "{\n// not NoteIri\n\tname: string;\n}" },
+				skip: ["Note", "NoteIri"],
+			}),
+			/export type Author = \{\n\/\/ not NoteIri\n\tname: string;\n\};/,
+		);
+	});
+
+	test("should keep a value that ends like an object in a relation written on one line, and name the property of that relation that uses a skipped type", () => {
+		const pets: OpenApiDocument = {
+			paths: {
+				"/pets/{id}": item("Pet.jsonld"),
+				"/owners/{id}": item("Owner.jsonld"),
+				"/towns/{id}": item("Town.jsonld"),
+			},
+			components: {
+				schemas: {
+					"Pet.jsonld": {
+						type: "object",
+						properties: {
+							owner: reference("Owner.jsonld"),
+							home: {
+								anyOf: [
+									{ properties: { town: reference("Town.jsonld") } },
+									{ properties: { town: reference("Town.jsonld"), floor: {} } },
+								],
+							},
+						},
+					},
+					"Owner.jsonld": {
+						type: "object",
+						properties: {
+							mood: { type: "string", enum: ["a; }", "b"] },
+							town: reference("Town.jsonld"),
+							friend: iri,
+						},
+					},
+					"Town.jsonld": { type: "object", properties: {} },
+				},
+			},
+		};
+
+		const friends = {
+			supportedClass: [
+				{
+					"@id": "#Owner",
+					title: "Owner",
+					supportedProperty: [
+						{ title: "friend", property: { range: "#Owner" } },
+					],
+				},
+			],
+		};
+
+		assert.match(
+			generateTypes(pets, friends, false, {
+				skip: ["Pet.owner.town", "Pet.owner.friend"],
+			}),
+			/\treadonly owner: Embedded<\{ mood: "a; \}" \| "b" \}, OwnerIri>;\n/,
+		);
+		assert.throws(
+			() => generateTypes(pets, friends, false, { skip: ["TownIri"] }),
+			{
+				message:
+					"Kept types use skipped ones: Owner.town uses TownIri, Pet.owner.town uses TownIri, Pet.home.town uses TownIri",
+			},
+		);
+		assert.throws(
+			() =>
+				generateTypes(pets, friends, false, { skip: ["Owner", "OwnerIri"] }),
+			{ message: "Kept types use skipped ones: Pet.owner uses OwnerIri" },
+		);
+		assert.throws(
+			() =>
+				generateTypes(pets, friends, false, {
+					skip: ["Owner", "OwnerIri", "Town", "TownIri"],
+				}),
+			{
+				message:
+					"Kept types use skipped ones: Pet.home.town uses TownIri, Pet.owner uses OwnerIri",
+			},
+		);
+	});
+
+	test("should read the required list of an object that is only taken, and leave out one that is not a list", () => {
+		const size = { width: { type: "integer" }, credit: { type: "string" } };
+		const generated = generateTypes({
+			paths: {
+				"/reports/{id}": item("Report.jsonld"),
+				"/reports/run": { post: { requestBody: content("ReportInput") } },
+			},
+			components: {
+				schemas: {
+					"Report.jsonld": {
+						type: "object",
+						properties: {
+							cover: {
+								type: "object",
+								properties: size,
+								required: true as unknown as string[],
+							},
+						},
+					},
+					ReportInput: {
+						type: "object",
+						properties: {
+							cover: { type: "object", properties: size, required: ["width"] },
+						},
+					},
+				},
+			},
+		});
+
+		assert.match(
+			generated,
+			/export type ReportInput = \{\n\tcover: \{\n\t\twidth: number;\n\t\tcredit\?: string;\n\t\};\n\};/,
+		);
+		assert.match(
+			generated,
+			/export type Report = \{\n\treadonly cover: \{\n\t\twidth: number;\n\t\tcredit: string;\n\t\};\n\};/,
+		);
+	});
+
+	test("should refuse a change that matches nothing in the generated file, is empty or is made twice", () => {
+		const refused = (config: Parameters<typeof generateTypes>[3]) => {
+			try {
+				generateTypes(openApi, hydraDocument, false, config);
+			} catch (error) {
+				return error instanceof Error ? error.message : String(error);
+			}
+		};
+
+		assert.deepEqual(
+			[
+				refused({ rename: { Autor: "Writer" } }),
+				refused({ rename: { Note: "Memo" }, skip: ["Note", "NoteIri"] }),
+				refused({
+					types: { "Article.titel": "string" },
+					skip: ["Article.seo.keyword"],
+				}),
+				refused({ types: { Note: "{}", "Note.text": "string" } }),
+				refused({ skip: ["Article.seo.keyword"] }),
+				refused({ rename: { Note: "my note" } }),
+				refused({ rename: { Note: "Book" } }),
+				refused({ types: { "Note.text": " " } }),
+				refused({ types: { "Note.text": "string", "Note.text?": "string" } }),
+				refused({ types: { "Note.text": "string" }, skip: ["Note.text"] }),
+			],
+			[
+				"The generated file has no type or property named Autor",
+				"The config changes Note more than once",
+				"The generated file has no type or property named Article.titel, Article.seo.keyword",
+				"The generated file has no type or property named Note.text",
+				"The generated file has no type or property named Article.seo.keyword",
+				'"my note" is not a valid type name',
+				"Two generated types are named Book",
+				"The type of Note.text is empty",
+				"The config changes Note.text more than once",
+				"The config changes Note.text more than once",
+			],
 		);
 	});
 });

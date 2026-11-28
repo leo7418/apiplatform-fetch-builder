@@ -6,7 +6,9 @@ type Schema = {
 	type?: string | string[];
 	format?: string;
 	enum?: unknown[];
+	const?: unknown;
 	items?: Schema;
+	maxItems?: number;
 	properties?: Record<string, Schema>;
 	additionalProperties?: Schema | boolean;
 	required?: string[];
@@ -50,22 +52,64 @@ type Resource = Route & { name: string; routes: Route[] };
 
 type Variant = { resource: Resource; schema: Schema; routes: string[] };
 
+/** Changes to the generated file, for an API whose documentation cannot change. */
+export type Config = {
+	/** New name of a generated type, by the name the command gives it */
+	rename?: Record<string, string>;
+	/** Type written by hand for a generated type or a property, such as `User.settings.locale`, which a final `?` makes optional */
+	types?: Record<string, string>;
+	/** Generated types and properties to leave out */
+	skip?: string[];
+};
+
 type Context = {
 	schemas: Record<string, Schema>;
 	resources: Map<string, Resource>;
 	targets: Map<string, string>;
 	aliases: Map<string, string>;
-	imports: Set<string>;
 	taken: Set<string>;
 	keepNullValues: boolean;
 	selectable: boolean;
 	stack: string[];
 	names: Map<string, string>;
+	given: Map<string, { type: string; optional: boolean }>;
+	skipped: Set<string>;
+	used: Set<string>;
+	uses: Map<string, Map<string, number>>;
+	path?: string;
 	self?: string;
 	sent?: "partial" | "required" | "typed";
 };
 
+type Declaration = { name: string; comment?: string; type: () => string };
+
 const ITEM_PATH = /^\/(.+)\/\{([^/{}]+)\}$/;
+
+const NAMES =
+	/\/\*[\s\S]*?\*\/|\/\/(?! As a service: )[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|(?<![\p{ID_Continue}$]|(?<!\.)\.)[\p{ID_Start}_$][\p{ID_Continue}$]*(?![\p{ID_Continue}$]|\??:)/gu;
+
+const SUBSTITUTIONS = /\$\{((?:[^{}]|\{[^{}]*\})*)\}/g;
+
+const mapNames = (text: string, change: (name: string) => string): string =>
+	text.replace(NAMES, (token) =>
+		token.startsWith("`")
+			? token.replace(
+					SUBSTITUTIONS,
+					(_, inner: string) => `\${${mapNames(inner, change)}}`,
+				)
+			: /^["'/]/.test(token)
+				? token
+				: change(token),
+	);
+
+const namesIn = (text: string) => {
+	const names = new Set<string>();
+	mapNames(text, (name) => {
+		names.add(name);
+		return name;
+	});
+	return names;
+};
 
 const lib = (
 	context: Context,
@@ -75,9 +119,56 @@ const lib = (
 	while (context.taken.has(alias)) {
 		alias = `Api${alias}`;
 	}
-	context.imports.add(alias === name ? name : `${name} as ${alias}`);
 	return alias;
 };
+
+const pathOf = (context: Context, property: string) =>
+	context.path === undefined ? undefined : `${context.path}.${property}`;
+
+const givenAt = (context: Context, path: string | undefined) => {
+	if (path === undefined || !context.given.has(path)) {
+		return undefined;
+	}
+	context.used.add(path);
+	return context.given.get(path);
+};
+
+const countUses = (text: string, skipped: Set<string>) => {
+	const counts = new Map<string, number>();
+	mapNames(text, (name) => {
+		if (skipped.has(name)) {
+			counts.set(name, (counts.get(name) ?? 0) + 1);
+		}
+		return name;
+	});
+	return counts;
+};
+
+const noteUses = (context: Context, path: string | undefined, type: string) => {
+	if (path !== undefined && context.skipped.size) {
+		const counts = context.uses.get(path) ?? new Map<string, number>();
+		countUses(type, context.skipped).forEach((count, name) =>
+			counts.set(name, (counts.get(name) ?? 0) + count),
+		);
+		context.uses.set(path, counts);
+	}
+	return type;
+};
+
+const isSkipped = (context: Context, path: string | undefined) => {
+	if (path === undefined || !context.skipped.has(path)) {
+		return false;
+	}
+	context.used.add(path);
+	return true;
+};
+
+const partsOf = (parts: Schema[] | undefined): Schema[] =>
+	Array.isArray(parts)
+		? parts
+		: typeof parts === "object" && parts !== null
+			? [parts]
+			: [];
 
 const schemaName = (schema: Schema | undefined) =>
 	schema?.$ref?.split("/").pop();
@@ -200,7 +291,7 @@ const writesOf = (operations: (Operation | undefined)[]) =>
 	operations.flatMap((operation) => schemaOf(operation?.requestBody) ?? []);
 
 const membersOf = (collection: Schema | undefined) =>
-	[collection, ...(collection?.allOf ?? [])]
+	[collection, ...partsOf(collection?.allOf)]
 		.map((part) => part?.properties)
 		.map((properties) => properties?.member ?? properties?.["hydra:member"])
 		.find(Boolean)?.items;
@@ -251,12 +342,9 @@ const readResources = (
 		path.split("/").length,
 		writes.length ? 0 : 1,
 	];
-	const ranked = [...items].sort(
-		(a, b) =>
-			rank(a)
-				.map((value, index) => value - rank(b)[index])
-				.find(Boolean) ?? 0,
-	);
+	const byOrder = (a: number[], b: number[]) =>
+		a.map((value, index) => value - b[index]).find(Boolean) ?? 0;
+	const ranked = [...items].sort((a, b) => byOrder(rank(a), rank(b)));
 	ranked.forEach((item) => {
 		if (!resources.has(item.name)) {
 			resources.set(item.name, {
@@ -265,12 +353,21 @@ const readResources = (
 			});
 		}
 	});
-	paths.forEach(([path, item]) => {
-		const read =
-			membersOf(schemaOf(item.get?.responses?.["200"])) ??
-			schemaOf(item.post?.responses?.["201"]);
-		const name = resourceName(schemaName(read), aliases);
-		if (read && name && !resources.has(name)) {
+	paths
+		.flatMap(([path, item]) => {
+			const members = membersOf(schemaOf(item.get?.responses?.["200"]));
+			const read = members ?? schemaOf(item.post?.responses?.["201"]);
+			const returned = (schemaName(read) ?? "")
+				.replace(/-.*$/, "")
+				.split(".")
+				.filter((part) => !FORMATS.includes(part));
+			const name =
+				returned.length === 1
+					? resourceName(schemaName(read), aliases)
+					: undefined;
+			if (!read || !name || items.some((other) => other.name === name)) {
+				return [];
+			}
 			const [, one] =
 				paths.find(([other]) => `/${ITEM_PATH.exec(other)?.[1]}` === path) ??
 				[];
@@ -284,9 +381,14 @@ const readResources = (
 				selectable: isSelectable(item.get, read),
 				output: hasOutput(writing),
 			};
-			resources.set(name, { ...route, name, routes: [route] });
-		}
-	});
+			return [{ name, route, order: [members ? 0 : 1, ...rank(route)] }];
+		})
+		.sort((a, b) => byOrder(a.order, b.order))
+		.forEach(({ name, route }) => {
+			if (!resources.has(name)) {
+				resources.set(name, { ...route, name, routes: [route] });
+			}
+		});
 	return resources;
 };
 
@@ -300,7 +402,7 @@ const propertiesOf = (
 	const name = schemaName(schema);
 	const parts = [
 		name ? context.schemas[name] : undefined,
-		...(schema.allOf ?? []),
+		...partsOf(schema.allOf),
 	];
 	return Object.assign(
 		{},
@@ -309,12 +411,20 @@ const propertiesOf = (
 	);
 };
 
-const isNull = (schema: Schema) => schema.type === "null";
+const isNull = (schema: Schema) =>
+	[schema.type].flat().every((type) => type === "null");
 
-const isNullable = (schema: Schema) =>
+const isNullable = (schema: Schema): boolean =>
 	schema.nullable === true ||
-	(Array.isArray(schema.type) && schema.type.includes("null")) ||
-	[...(schema.anyOf ?? []), ...(schema.oneOf ?? [])].some(isNull);
+	[schema.type].flat().includes("null") ||
+	[
+		...partsOf(schema.anyOf),
+		...partsOf(schema.oneOf),
+		...partsOf(schema.allOf),
+	].some(isNullable);
+
+const listed = (schema: Schema) =>
+	Array.isArray(schema.required) ? schema.required : undefined;
 
 const indent = (text: string) => text.replaceAll("\n", "\n\t");
 
@@ -326,14 +436,30 @@ const objectType = (
 	properties: Record<string, Schema>,
 	written: Record<string, Schema> | undefined,
 	context: Context,
+	required?: string[],
 ): string => {
 	const lines = Object.entries(properties)
-		.filter(([name, schema]) => !name.startsWith("@") && !schema.writeOnly)
+		.filter(
+			([name, schema]) =>
+				!name.startsWith("@") &&
+				!schema.writeOnly &&
+				!isSkipped(context, pathOf(context, name)),
+		)
 		.map(([name, schema]) => {
+			const path = pathOf(context, name);
+			const given = givenAt(context, path);
 			const readOnly =
 				schema.readOnly || (written && !Object.hasOwn(written, name));
 			const nullable = isNullable(schema);
-			return `${readOnly ? "readonly " : ""}${key(name)}${nullable ? "?" : ""}: ${typeOf(schema, owner, name, context)}${nullable && context.keepNullValues ? " | null" : ""};`;
+			const optional =
+				nullable || given?.optional || required?.includes(name) === false;
+			const type = noteUses(
+				context,
+				path,
+				given?.type ??
+					`${typeOf(schema, owner, name, { ...context, path })}${nullable && context.keepNullValues ? " | null" : ""}`,
+			);
+			return `${readOnly ? "readonly " : ""}${key(name)}${optional ? "?" : ""}: ${type};`;
 		});
 	return lines.length ? `{\n\t${indent(lines.join("\n"))}\n}` : "{}";
 };
@@ -346,13 +472,24 @@ const typeOf = (
 	property: string,
 	context: Context,
 ): string => {
-	const alternatives = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])]
+	const alternatives = [...partsOf(schema.anyOf), ...partsOf(schema.oneOf)]
 		.filter((alternative) => !isNull(alternative))
 		.map((alternative) => typeOf(alternative, owner, property, context));
 	if (alternatives.length) {
 		return [...new Set(alternatives)].join(" | ");
 	}
 	const name = schemaName(schema);
+	if (!name && partsOf(schema.allOf).length) {
+		const { allOf, ...own } = schema;
+		const parts = [...partsOf(allOf), ...(own.properties ? [own] : [])]
+			.map((part) => typeOf(part, owner, property, context))
+			.filter((part) => part !== "unknown");
+		return parts.length < 2
+			? (parts[0] ?? "unknown")
+			: parts
+					.map((part) => (part.includes(" | ") ? `(${part})` : part))
+					.join(" & ");
+	}
 	if (name) {
 		const component = context.schemas[name];
 		if (component && !component.properties && !component.allOf) {
@@ -395,10 +532,15 @@ const typeOf = (
 			return body;
 		}
 		const embedded = lib(context, "Embedded");
-		const line = `${embedded}<${body.replace(/\n\t*/g, " ").replace("; }", " }")}, ${iriOf(target)}>`;
-		return line.length <= 60 && body.split("{").length === 2
+		const line = `${embedded}<${body.replace(/\n\t*/g, " ").replace(/; }$/, " }")}, ${iriOf(target)}>`;
+		return line.length <= 60 &&
+			body.split("{").length === 2 &&
+			!body.includes("//")
 			? line
 			: `${embedded}<\n\t${indent(body)},\n\t${iriOf(target)}\n>`;
+	}
+	if (schema.const !== undefined && schema.const !== null) {
+		return JSON.stringify(schema.const);
 	}
 	if (schema.enum?.some((value) => value !== null)) {
 		return schema.enum
@@ -406,9 +548,19 @@ const typeOf = (
 			.map((value) => JSON.stringify(value))
 			.join(" | ");
 	}
-	const type = [schema.type]
+	const types = [schema.type]
 		.flat()
-		.find((candidate) => candidate && candidate !== "null");
+		.filter((candidate) => candidate && candidate !== "null");
+	if (types.length > 1) {
+		return [
+			...new Set(
+				types.map((type) =>
+					typeOf({ ...schema, type }, owner, property, context),
+				),
+			),
+		].join(" | ");
+	}
+	const [type] = types;
 	if (schema.format === "iri-reference") {
 		const target = context.targets.get(`${owner}.${property}`);
 		if (target && context.resources.has(target)) {
@@ -418,19 +570,29 @@ const typeOf = (
 		}
 		return lib(context, "AnyIri");
 	}
+	if (type === "array" && schema.maxItems === 0) {
+		return "[]";
+	}
 	if (type === "array") {
 		const items = `${typeOf(schema.items ?? {}, owner, property, context)}${schema.items && isNullable(schema.items) ? " | null" : ""}`;
 		return `${items.includes(" ") ? `(${items})` : items}[]`;
 	}
-	if (schema.properties) {
+	if (schema.properties && (!type || type === "object")) {
 		return context.sent
 			? sentObject(
 					owner,
 					Object.entries(schema.properties),
-					schema.required ?? [],
+					listed(schema) ?? [],
 					context,
+					listed(schema),
 				)
-			: objectType(owner, schema.properties, undefined, context);
+			: objectType(
+					owner,
+					schema.properties,
+					undefined,
+					context,
+					listed(schema),
+				);
 	}
 	if (type === "object") {
 		const values = schema.additionalProperties;
@@ -455,9 +617,9 @@ const requiredOf = (schema: Schema | undefined, context: Context): string[] => {
 		return [];
 	}
 	const name = schemaName(schema);
-	return [name ? context.schemas[name] : undefined, ...(schema.allOf ?? [])]
+	return [name ? context.schemas[name] : undefined, ...partsOf(schema.allOf)]
 		.flatMap((part) => requiredOf(part, context))
-		.concat(schema.required ?? []);
+		.concat(listed(schema) ?? []);
 };
 
 const sentObject = (
@@ -465,19 +627,36 @@ const sentObject = (
 	properties: [string, Schema][],
 	required: string[],
 	context: Context,
+	own?: string[],
 ): string => {
 	const lines = properties
-		.filter(([name, schema]) => !name.startsWith("@") && !schema.readOnly)
+		.filter(
+			([name, schema]) =>
+				!name.startsWith("@") &&
+				!schema.readOnly &&
+				!isSkipped(context, pathOf(context, name)),
+		)
 		.map(([name, schema]) => {
+			const path = pathOf(context, name);
+			const given = givenAt(context, path);
 			const nullable = isNullable(schema);
 			const needed = context.sent === "required" && required.includes(name);
-			const optional = context.sent === "typed" ? nullable : !needed;
-			return `${key(name)}${optional ? "?" : ""}: ${typeOf(schema, owner, name, context)}${nullable && !needed ? " | null" : ""};`;
+			const optional =
+				context.sent === "typed"
+					? nullable || own?.includes(name) === false
+					: !needed;
+			const type = noteUses(
+				context,
+				path,
+				given?.type ??
+					`${typeOf(schema, owner, name, { ...context, path })}${nullable && !needed ? " | null" : ""}`,
+			);
+			return `${key(name)}${optional || given?.optional ? "?" : ""}: ${type};`;
 		});
 	return lines.length ? `{\n\t${indent(lines.join("\n"))}\n}` : "{}";
 };
 
-const bodyType = (resource: Resource, context: Context, name: string) => {
+const bodyType = (resource: Resource, context: Context) => {
 	const read = propertiesOf(resource.read, context);
 	const extras = sentObject(
 		resource.name,
@@ -489,10 +668,7 @@ const bodyType = (resource: Resource, context: Context, name: string) => {
 	);
 	return extras === "{}"
 		? undefined
-		: {
-				name,
-				type: `export type ${name} = ${lib(context, "WriteBody")}<${resource.name}> & ${extras};`,
-			};
+		: `${lib(context, "WriteBody")}<${resource.name}> & ${extras}`;
 };
 
 const modelOf = (
@@ -521,7 +697,15 @@ export const generateTypes = (
 	openApi: OpenApiDocument,
 	hydraDocument?: HydraDocument,
 	keepNullValues = false,
+	config: Config = {},
 ): string => {
+	const renames = new Map(Object.entries(config.rename ?? {}));
+	const invalid = [...renames.values()].find(
+		(name) => !/^[\p{ID_Start}_$][\p{ID_Continue}$]*$/u.test(name),
+	);
+	if (invalid !== undefined) {
+		throw new Error(`${JSON.stringify(invalid)} is not a valid type name`);
+	}
 	const schemas = openApi.components?.schemas ?? {};
 	const bases = new Set(Object.keys(schemas).map(baseName));
 	const aliases = new Map(
@@ -538,12 +722,15 @@ export const generateTypes = (
 		resources: readResources(openApi, aliases),
 		targets: readTargets(hydraDocument, aliases),
 		aliases,
-		imports: new Set(),
 		taken: new Set(),
 		keepNullValues,
 		selectable: false,
 		stack: [],
 		names: new Map(),
+		given: new Map(),
+		skipped: new Set(),
+		used: new Set(),
+		uses: new Map(),
 	};
 	context.resources.forEach(({ name, read }) =>
 		context.names.set(schemaName(read) ?? name, name),
@@ -593,11 +780,7 @@ export const generateTypes = (
 				return;
 			}
 			const resource = context.resources.get(aliases.get(type) ?? type);
-			const draft = {
-				...context,
-				imports: new Set<string>(),
-				selectable: resource?.selectable ?? false,
-			};
+			const draft = { ...context, selectable: resource?.selectable ?? false };
 			if (!resource) {
 				const properties = propertiesOf(schema, context);
 				const written = Object.entries(properties)
@@ -740,8 +923,7 @@ export const generateTypes = (
 				selectable: resource.selectable,
 				stack: [schemaName(resource.read) ?? resource.name],
 			};
-			const shape = (schema: Schema) =>
-				modelOf(resource, schema, { ...scoped, imports: new Set<string>() });
+			const shape = (schema: Schema) => modelOf(resource, schema, scoped);
 			const returning = (schema: Schema, routes: string[]) =>
 				resource.routes.filter(
 					(route) =>
@@ -751,94 +933,280 @@ export const generateTypes = (
 				);
 			const iris = [
 				...new Set(
-					resource.routes.map(({ path, identifier, read }) => {
-						const type = [propertiesOf(read, context)[identifier]?.type]
+					resource.routes.map(({ path, item, identifier, read }) => {
+						const types = [propertiesOf(read, context)[identifier]?.type]
 							.flat()
-							.find((candidate) => candidate !== "null");
+							.filter((candidate) => candidate !== "null");
+						const numeric =
+							types.length > 0 &&
+							types.every((type) => type === "integer" || type === "number");
 						const id =
-							type === "integer" || type === "number"
+							numeric && item
 								? ""
-								: type === "string"
+								: types.join() === "string"
 									? ", string"
 									: ", string | number";
-						const literal = path.includes("{")
-							? `\`${path.replace(/[`\\]/g, "\\$&").replace(/\{[^}]+\}/g, "${string}")}\``
-							: JSON.stringify(path);
+						const literal = !item
+							? "string"
+							: path.includes("{")
+								? `\`${path.replace(/[`\\]/g, "\\$&").replace(/\{[^}]+\}/g, "${string}")}\``
+								: JSON.stringify(path);
 						return `${lib(context, "Iri")}<${literal}${id}>`;
 					}),
 				),
 			];
-			const iri = `export type ${iriOf(resource.name)} = ${iris.join(" | ")};`;
-			const body = bodyType(
-				resource,
-				scoped,
-				bodies.get(resource.name) ?? resource.name,
-			);
+			const body = bodyType(resource, scoped) && bodies.get(resource.name);
 			const others = named.filter(
 				({ variant }) => variant.resource === resource,
 			);
 			const listed = others.find(({ variant }) =>
 				variant.routes.includes(`GET ${resource.collection}`),
 			);
-			const options = [
-				body && `body: ${body.name}`,
-				listed && `collection: ${listed.name}`,
-				!resource.output && "output: false",
-			].filter(Boolean);
-			const service = `// As a service: entityServiceBuilder<${iriOf(resource.name)}, ${resource.name}${options.length ? `, { ${options.join("; ")} }` : ""}>(api, ${JSON.stringify(`/${resource.path}`)})\n`;
-			return [
-				`${service}${iri.length <= 80 || iris.length === 1 ? iri : `export type ${iriOf(resource.name)} =\n\t| ${iris.join("\n\t| ")};`}\nexport type ${resource.name} = ${modelOf(resource, resource.read, scoped, returning(resource.read, []))};`,
-				...(body ? [body.type] : []),
-				...others.map(({ name, variant }) => {
-					const selectable = scoped.selectable && !groupsOf(variant.schema);
-					return `${comment(`Returned${isLinked(schemaName(variant.schema)) ? "" : " in plain JSON"} by ${variant.routes.join(", ")}.`)}\nexport type ${name} = ${modelOf(resource, variant.schema, { ...context, selectable }, returning(variant.schema, variant.routes), name)};`;
-				}),
-				...taken
-					.filter(({ variant }) => variant.resource === resource)
-					.map(({ name, variant }) => {
-						const sent = sentObject(
-							resource.name,
-							Object.entries(propertiesOf(variant.schema, context)),
-							requiredOf(variant.schema, context),
+			const isKept = (name: string | undefined) =>
+				name !== undefined && !context.skipped.has(name);
+			const service = () => {
+				const options = [
+					isKept(body) && `body: ${body}`,
+					listed && isKept(listed.name) && `collection: ${listed.name}`,
+					!resource.output && "output: false",
+				].filter(Boolean);
+				return isKept(resource.name) && isKept(iriOf(resource.name))
+					? `// As a service: entityServiceBuilder<${iriOf(resource.name)}, ${resource.name}${options.length ? `, { ${options.join("; ")} }` : ""}>(api, ${JSON.stringify(`/${resource.path}`)})\n`
+					: "";
+			};
+			const declarations: Declaration[] = [
+				{
+					name: iriOf(resource.name),
+					type: () => {
+						const union = iris.join(" | ");
+						return `export type ${iriOf(resource.name)} = ${union};`.length <=
+							80 || iris.length === 1
+							? union
+							: `\n\t| ${iris.join("\n\t| ")}`;
+					},
+				},
+				{
+					name: resource.name,
+					type: () =>
+						modelOf(
+							resource,
+							resource.read,
+							{ ...scoped, path: resource.name },
+							returning(resource.read, []),
+						),
+				},
+				...(body
+					? [
+							{
+								name: body,
+								type: () =>
+									bodyType(resource, { ...scoped, path: body }) ??
+									`${lib(context, "WriteBody")}<${resource.name}>`,
+							},
+						]
+					: []),
+				...others.map(({ name, variant }) => ({
+					name,
+					comment: comment(
+						`Returned${isLinked(schemaName(variant.schema)) ? "" : " in plain JSON"} by ${variant.routes.join(", ")}.`,
+					),
+					type: () =>
+						modelOf(
+							resource,
+							variant.schema,
 							{
 								...context,
-								sent: variant.routes.every((route) =>
-									/^(POST|PUT) /.test(route),
-								)
-									? "required"
-									: "partial",
-								stack: [schemaName(variant.schema) ?? name],
+								selectable: scoped.selectable && !groupsOf(variant.schema),
+								path: name,
 							},
-						);
-						return `${comment(`Taken by ${variant.routes.join(", ")}.`)}\nexport type ${name} = ${sent};`;
-					}),
-			].join("\n");
+							returning(variant.schema, variant.routes),
+							name,
+						),
+				})),
+				...taken
+					.filter(({ variant }) => variant.resource === resource)
+					.map(({ name, variant }) => ({
+						name,
+						comment: comment(`Taken by ${variant.routes.join(", ")}.`),
+						type: () =>
+							sentObject(
+								resource.name,
+								Object.entries(propertiesOf(variant.schema, context)),
+								requiredOf(variant.schema, context),
+								{
+									...context,
+									sent: variant.routes.every((route) =>
+										/^(POST|PUT) /.test(route),
+									)
+										? "required"
+										: "partial",
+									stack: [schemaName(variant.schema) ?? name],
+									path: name,
+								},
+							),
+					})),
+			];
+			return { service, declarations };
 		});
-	const plain = objects.map(({ name, type, schema, returned, taken }) => {
-		const routes = [
-			returned.length && `Returned by ${byPath(returned).join(", ")}.`,
-			taken.length && `Taken by ${byPath(taken).join(", ")}.`,
-		].filter(Boolean);
-		const scoped = {
-			...context,
-			keepNullValues: keepNullValues || taken.length > 0,
-			stack: [schemaName(schema) ?? type],
-			self: name,
-		};
-		const properties = propertiesOf(schema, context);
-		const object = returned.length
-			? objectType(type, properties, undefined, scoped)
-			: sentObject(type, Object.entries(properties), [], {
-					...scoped,
-					sent: "typed",
-				});
-		return `${comment(routes.join(" "))}\nexport type ${name} = ${object};`;
+	const plain = objects.map(
+		({ name, type, schema, returned, taken }): Declaration => {
+			const routes = [
+				returned.length && `Returned by ${byPath(returned).join(", ")}.`,
+				taken.length && `Taken by ${byPath(taken).join(", ")}.`,
+			].filter(Boolean);
+			const scoped = {
+				...context,
+				keepNullValues: keepNullValues || taken.length > 0,
+				stack: [schemaName(schema) ?? type],
+				self: name,
+				path: name,
+			};
+			const properties = propertiesOf(schema, context);
+			return {
+				name,
+				comment: comment(routes.join(" ")),
+				type: () =>
+					returned.length
+						? objectType(type, properties, undefined, scoped)
+						: sentObject(type, Object.entries(properties), [], {
+								...scoped,
+								sent: "typed",
+							}),
+			};
+		},
+	);
+	const all = new Set(
+		[...models.flatMap(({ declarations }) => declarations), ...plain].map(
+			({ name }) => name,
+		),
+	);
+	const generatedOf = (key: string) => {
+		const [head = "", ...rest] = key.replace(/\?$/, "").split(".");
+		const original = all.has(head)
+			? head
+			: [...renames].find(([, name]) => name === head)?.[0];
+		return [original ?? head, ...rest].join(".");
+	};
+	const typed = Object.entries(config.types ?? {}).map(([key, type]) => ({
+		key,
+		type,
+		path: generatedOf(key),
+	}));
+	const skips = (config.skip ?? []).map(generatedOf);
+	const empty = typed.find(({ type }) => !type.trim());
+	if (empty) {
+		throw new Error(`The type of ${empty.key} is empty`);
+	}
+	const paths = typed.map(({ path }) => path);
+	const clashes = [
+		...paths.filter(
+			(path, index) => paths.indexOf(path) !== index || skips.includes(path),
+		),
+		...[...renames.keys()].filter((name) => skips.includes(name)),
+	];
+	if (clashes.length) {
+		throw new Error(
+			`The config changes ${[...new Set(clashes)].join(", ")} more than once`,
+		);
+	}
+	typed.forEach(({ key, type, path }) =>
+		context.given.set(path, { type, optional: key.endsWith("?") }),
+	);
+	skips.forEach((path) => context.skipped.add(path));
+	const declare = ({ name, comment, type }: Declaration) => {
+		const written = givenAt(context, name)?.type ?? type();
+		return `${comment ? `${comment}\n` : ""}export type ${name} =${written.startsWith("\n") ? "" : " "}${written};`;
+	};
+	const blocks = [
+		...models,
+		...plain.map((declaration) => ({
+			service: () => "",
+			declarations: [declaration],
+		})),
+	]
+		.map(({ service, declarations }) => ({
+			service: service(),
+			declarations: declarations
+				.filter(({ name }) => !context.skipped.has(name))
+				.map((declaration) => ({
+					name: declaration.name,
+					text: declare(declaration),
+				})),
+		}))
+		.filter(({ declarations }) => declarations.length);
+	const kept = new Set(
+		blocks.flatMap(({ declarations }) => declarations.map(({ name }) => name)),
+	);
+	const unknown = [
+		...Object.keys(config.rename ?? {}).filter((name) => !kept.has(name)),
+		...Object.keys(config.types ?? {}).filter(
+			(key) => !context.used.has(generatedOf(key)),
+		),
+		...(config.skip ?? []).filter((key) => {
+			const path = generatedOf(key);
+			const parts = path.split(".");
+			const left = parts.some(
+				(_, index) =>
+					index > 0 && context.skipped.has(parts.slice(0, index).join(".")),
+			);
+			return !all.has(path) && !context.used.has(path) && !left;
+		}),
+	];
+	if (unknown.length) {
+		throw new Error(
+			`The generated file has no type or property named ${unknown.join(", ")}`,
+		);
+	}
+	const nested = new Map<string, [string, Map<string, number>][]>();
+	context.uses.forEach((counts, path) => {
+		const parent = path.slice(0, path.lastIndexOf("."));
+		nested.set(parent, [...(nested.get(parent) ?? []), [path, counts]]);
 	});
-	const imports = context.imports.size
-		? [
-				`import type { ${[...context.imports].sort().join(", ")} } from "apiplatform-fetch-builder";`,
-			]
-		: [];
+	const usersOf = (
+		path: string,
+		counts: Map<string, number>,
+		used: string,
+	): string[] => {
+		const children = nested.get(path) ?? [];
+		const inside = children.reduce(
+			(sum, [, own]) => sum + (own.get(used) ?? 0),
+			0,
+		);
+		return (counts.get(used) ?? 0) > inside
+			? [path]
+			: children.flatMap(([other, own]) => usersOf(other, own, used));
+	};
+	const conflicts = new Set(
+		blocks.flatMap(({ declarations }) =>
+			declarations.flatMap(({ name, text }) => {
+				const counts = countUses(text, context.skipped);
+				const uses = [...counts.keys()].flatMap((used) =>
+					usersOf(name, counts, used).map((path) => [path, used] as const),
+				);
+				return uses
+					.filter(
+						([path]) => !uses.some(([above]) => path.startsWith(`${above}.`)),
+					)
+					.map(([path, used]) => `${path} uses ${used}`);
+			}),
+		),
+	);
+	if (conflicts.size) {
+		throw new Error(
+			`Kept types use skipped ones: ${[...conflicts].join(", ")}`,
+		);
+	}
+	const sections = blocks.map(({ service, declarations }) =>
+		mapNames(
+			`${service}${declarations.map(({ text }) => text).join("\n")}`,
+			(name) => renames.get(name) ?? name,
+		),
+	);
+	const mentioned = namesIn(sections.join("\n"));
+	const imports = (["AnyIri", "Embedded", "Iri", "WriteBody"] as const)
+		.map((name) => [name, lib(context, name)] as const)
+		.filter(([, alias]) => mentioned.has(alias))
+		.map(([name, alias]) => (name === alias ? name : `${name} as ${alias}`));
 	const register = JSON.stringify(openApi.paths ?? {}).includes(
 		'"hydra:member"',
 	)
@@ -848,14 +1216,19 @@ export const generateTypes = (
 		: [];
 	const generated = [
 		`// Generated by apiplatform-fetch-builder${keepNullValues ? " with --keep-null-values" : ""}. Do not edit.`,
-		...imports,
+		...(imports.length
+			? [
+					`import type { ${imports.join(", ")} } from "apiplatform-fetch-builder";`,
+				]
+			: []),
 		...register,
-		...models,
-		...plain,
+		...sections,
 	].join("\n\n");
 	const names = [
-		...[...context.imports].map((name) => name.replace(/^.+ as /, "")),
-		...[...generated.matchAll(/^export type (\w+)/gm)].map(([, name]) => name),
+		...imports.map((name) => name.replace(/^.+ as /, "")),
+		...[...generated.matchAll(/^export type (\S+) =/gm)].map(
+			([, name]) => name,
+		),
 	];
 	const twice = names.find((name, index) => names.indexOf(name) !== index);
 	if (twice) {

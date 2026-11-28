@@ -188,6 +188,11 @@ const ORIGIN = /^(?:[a-z][a-z\d+.-]*:)?\/\/[^/]*/i;
 
 const originOf = (iri: string) => ORIGIN.exec(iri)?.[0] ?? "";
 
+const targetOf = (body: { "@id"?: unknown; id?: unknown }): unknown =>
+	typeof body["@id"] === "string" && GENERATED_ID.test(body["@id"])
+		? body.id
+		: body["@id"] || body.id;
+
 const decode = (segment: string) => {
 	try {
 		return decodeURIComponent(segment);
@@ -310,7 +315,7 @@ const entityServiceBuilder = <
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
-				? idOrIriOrBody["@id"] || idOrIriOrBody.id
+				? targetOf(idOrIriOrBody)
 				: idOrIriOrBody;
 		const body = toBody(
 			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
@@ -333,7 +338,7 @@ const entityServiceBuilder = <
 	): Promise<Item<Entity, EntityIri>> => {
 		const iri =
 			typeof idOrIriOrBody === "object"
-				? idOrIriOrBody["@id"] || idOrIriOrBody.id
+				? targetOf(idOrIriOrBody)
 				: idOrIriOrBody;
 		const body = toBody(
 			typeof idOrIriOrBody === "object" ? idOrIriOrBody : maybeBody!,
@@ -351,10 +356,7 @@ const entityServiceBuilder = <
 	const upsert = (
 		body: EntityBody | ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>,
 	): Promise<Item<Entity, EntityIri>> => {
-		const id =
-			(body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>)[
-				"@id"
-			] || (body as ObjectWithId<EntityPatchBody, EntityIri, OwnId<Entity>>).id;
+		const id = targetOf(body as { "@id"?: unknown; id?: unknown });
 
 		return id == null || id === ""
 			? create(body as EntityBody)

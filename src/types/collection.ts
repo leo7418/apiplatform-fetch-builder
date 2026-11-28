@@ -1,5 +1,5 @@
 import type { Merged } from "./internal.ts";
-import type { AnyIri, Iri } from "./iri.ts";
+import type { AnyIri } from "./iri.ts";
 import type { Embedded, Item } from "./item.ts";
 import type { HydraKeys, HydraPrefix } from "./register.ts";
 
@@ -7,7 +7,7 @@ type WithoutContext<T> = T extends { "@context": unknown }
 	? Omit<T, "@context">
 	: T;
 
-export type PartialCollection<T, I extends AnyIri = Iri<string>> = {
+export type PartialCollection<T, I extends AnyIri = AnyIri> = {
 	"@context": string;
 	"@id": string;
 	"@type": `${HydraPrefix}Collection`;
@@ -36,10 +36,7 @@ export type PartialCollection<T, I extends AnyIri = Iri<string>> = {
 	}>;
 }>;
 
-export type Collection<T, I extends AnyIri = Iri<string>> = PartialCollection<
-	T,
-	I
-> &
+export type Collection<T, I extends AnyIri = AnyIri> = PartialCollection<T, I> &
 	HydraKeys<{ totalItems: number }>;
 
 export type GetCollectionItem<C> =

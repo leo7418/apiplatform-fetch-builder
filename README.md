@@ -332,7 +332,7 @@ A resource is described once, as `get()` returns it. The body of `create`, `upda
 
 Every property of the body is optional: a model does not tell a property the API requires from one it fills with a default, so the API decides what is missing. A validation constraint answers with a `422` and its violations; without one, the answer depends on the API.
 
-A relation is written as its IRI, and an item can be sent back as it was read, `userService.update({ ...user, name: "Bob" })`: the service sends every embedded resource, an object whose `@id` is a path or a URL, as that IRI. A nested object that is not a resource, whose `@id` is generated (`/.well-known/genid/…`), stays an object and loses its `@id` and `@type`. An object that carries a `@context` other than one of the API (`/contexts/…`), such as a JSON-LD document kept in a JSON column, is left as it is, with everything it contains. An object without `@id` is sent as it is, which API Platform takes only where nested documents are allowed and refuses otherwise, with a `400` or a `422` (`Nested documents for attribute "company" are not allowed. Use IRIs instead.`). To change a related resource through its relation, with its `@id` and its new values, use `fetchBuilder`, which sends a body as it is given.
+A relation is written as its IRI, and an item can be sent back as it was read, `userService.update({ ...user, name: "Bob" })`: the service sends every embedded resource, an object whose `@id` is a path or a URL, as that IRI. A nested object that is not a resource, whose `@id` is generated (`/.well-known/genid/…`), stays an object and loses its `@id` and `@type`. An item whose own `@id` is generated, as a route declared with `output` returns it, is sent to its `id`. An object that carries a `@context` other than one of the API (`/contexts/…`), such as a JSON-LD document kept in a JSON column, is left as it is, with everything it contains. An object without `@id` is sent as it is, which API Platform takes only where nested documents are allowed and refuses otherwise, with a `400` or a `422` (`Nested documents for attribute "company" are not allowed. Use IRIs instead.`). To change a related resource through its relation, with its `@id` and its new values, use `fetchBuilder`, which sends a body as it is given.
 
 A model does not tell a nested object from a relation declared without its IRI: both take any IRI at compile time, which the API ignores or refuses for a nested object, and an object that is not written in place is only checked on the properties it shares with the model, so the item of another resource is accepted. Declare the relation as `Company | CompanyIri` or `Embedded<Company, CompanyIri>` to have its IRI and its content checked.
 
@@ -404,9 +404,9 @@ export type UserRegisterBody = {
   locale?: string;
 };
 
-const users = entityServiceBuilder<UserIri, User, { body: UserBody; collection: UserList }>(api, "/users");
-const employees = await api.get<Collection<UserList, UserIri>>("/companies/1/employees").fetch();
-const registered = await api.post<Item<User, UserIri>, UserRegisterBody>("/register").fetch({ email, plainPassword });
+const users = entityServiceBuilder<UserIri, User, { body: UserBody; collection: UserList }>(api, "/api/users");
+const employees = await api.get<Collection<UserList, UserIri>>("/api/companies/1/employees").fetch();
+const registered = await api.post<Item<User, UserIri>, UserRegisterBody>("/api/register").fetch({ email, plainPassword });
 ```
 
 The model of a resource is the one of its item, read on its shortest route when it has several, `/users/{id}` rather than `/admin/users/{id}`, and on the one that has writes when two are as short. The types of a resource follow each other under a comment that declares its service on the path of that route, with the `body`, `collection` and `output` options it needs; `{ pagination: "partial" }` is added by hand, since the documentation of a partial collection is the same as any other. The comment of every other model gives the routes that return it, to type them with `fetchBuilder` or with a service of their own. A few rules name these models and bodies:
@@ -416,6 +416,8 @@ The model of a resource is the one of its item, read on its shortest route when 
 - Two routes share a type when they return or take the same properties, or the same serialization groups and property names whatever their validation groups, which API Platform folds into the schema of each operation; a route that takes what the standard writes take gets none.
 
 In collection members and relations, API Platform writes the IRI of the item route the class declares first, and an item read on another of its routes carries the URL of that route: the IRI type of a class with several item routes accepts all of them, such as `Iri<"products"> | Iri<"admin/products">`. A model of another route is the model of a service of its own, `entityServiceBuilder<PageIri, PageReadAdmin>(api, "/admin/pages")`, whose writes are the ones of that route. Such a service reaches its route with an id, `get(member.id)` or `update(member.id, body)`: an IRI, or an item sent back with its `@id`, goes to the route of the IRI.
+
+A class without an item route is read on its collection, the one under the fewest other resources when it has several, or on a creation route when it has none. API Platform builds its IRIs on a route of its own, which it documents nowhere and which follows none of these paths: the IRI type of such a class accepts any path, `Iri<string, string | number>`.
 
 On an API that keeps the `hydra:` prefix, the generated file declares it, as described under [`hydra:` prefix](#hydra-prefix).
 
@@ -429,14 +431,37 @@ Given with the URL of an API, `--hydra` replaces its Hydra documentation.
 
 A few things depend on what the API documents:
 
-- A resource that is only reachable under another one is written with the path of its parent in its IRI, such as ``Iri<`companies/${string}/employees`>``. A sub-resource whose resource also has a path of its own needs nothing more than the model of that resource.
+- A resource whose item route is under another one is written with the path of its parent in its IRI, such as ``Iri<`companies/${string}/employees`>``. A sub-resource whose resource also has a path of its own needs nothing more than the model of that resource.
 - A model describes a resource as its own routes return it. Reached through a relation of another resource, it can be serialized differently: with `properties: ["assignee.company"]` on a task, `company` comes as an IRI even when the model of `User` declares it embedded.
 - A route that answers plain JSON only, such as one declared with `outputFormats: ['json']`, has a model whose relations carry no `@id`, and its comment says so: read it with `.withHeaders({ Accept: "application/json" })`.
+- A route that returns another class than its resource, declared with `output`, answers with an `@id` that API Platform makes up, such as `/.well-known/genid/…`: the IRI type of the resource describes its routes, not that `@id`, and a service reaches such an item by its `id`.
 - A resource named like a type of this library, such as `Embedded`, keeps its name: the generated file then imports the type of the library as `ApiEmbedded`.
 - A resource whose name is the one of another resource followed by a number, such as `Oauth2` next to `Oauth`, is taken for a second declaration of the same class, which API Platform 5 names that way: it gets a model, and its route joins the IRI type of the other.
-- An array is typed `unknown[]` when the documentation does not give the type of its items. API Platform 4.4 and 5.0 only read it from the PHP doc comments (`@var string[]`) when the API has both `phpstan/phpdoc-parser` and `phpdocumentor/reflection-docblock` installed. API Platform 3.4 documents an untyped array as an array of strings.
+- An array is typed `unknown[]` when the documentation does not give the type of its items. API Platform 4.4 and 5.0 only read it from the PHP doc comments (`@var string[]`) when the API has both `phpstan/phpdoc-parser` and `phpdocumentor/reflection-docblock` installed. API Platform 3.4 documents an untyped array as an array of strings. Without these packages, a getter that returns a Doctrine `Collection` is documented as an object of its methods, `{ empty; keys; values; iterator }`, and an associative array as a list: give them a PHPDoc type, such as `@return Collection<int, Project>` or `@var array<string, int>`. Installing these packages changes the responses as well as the documentation: a relation whose class only a doc comment gives is returned as an embedded object without them and as an IRI with them, unless the serialization groups embed it or it is declared with `#[ApiProperty(readableLink: true)]`.
+- In PHP a map is an array, and an empty one is written `[]` instead of `{}`: a property documented as an object, such as a map or the content of a JSON column, then holds an empty list. `Object.keys` and `Object.entries` see no difference; `Array.isArray` does, and so does a read of a key that an array has, such as `length`.
+- With Doctrine inheritance, the members of the collection of a parent class, and the relations to it, carry the IRI of their own class, such as `/cars/3` among `/vehicles`, which the IRI type of the parent does not accept: the documentation does not tell a class from its parent.
 
-The command writes what the API documents. To correct a type, such as the content of a JSON column, declare it on the API with `#[ApiProperty(schema: […])]` and generate again, rather than editing the file: exclude it from Prettier and ESLint, which would rewrite it.
+The command writes what the API documents, and each generation rewrites the file: exclude it from Prettier and ESLint, which would rewrite it too, and change it through the API or a config file rather than by hand. To correct a type, such as the content of a JSON column, declare it on the API with `#[ApiProperty(schema: […])]` and generate again. API Platform then documents the property with that schema and adds nothing to it, not even that it is nullable or read-only: write `'type' => ['object', 'null']` for a nullable property, and `'readOnly' => true` for one that is only read. In an object it describes, a `required` list makes the properties it leaves out optional. When the API cannot change, or to rename or leave out what it documents, give the command a JSON file with `--config`:
+
+```json
+{
+  "rename": { "UserList": "UserSummary" },
+  "types": {
+    "UserRegisterBody.locale": "'en' | 'fr'",
+    "UserSummary.name?": "string"
+  },
+  "skip": ["UserBody", "User.email"]
+}
+```
+
+```bash
+npx apiplatform-fetch-builder generate https://api.example.com/api src --config api-types.json
+```
+
+- `rename` gives a generated type a new name, which the whole file then uses.
+- `types` writes by hand the type of a generated type, or of a property: `UserRegisterBody.locale`, or `User.settings.locale` through nested objects, where an array or a map adds nothing to the path. The type replaces everything after the colon, `null` included, and can use the generated types and `Iri`, `AnyIri`, `Embedded` and `WriteBody`, or any other type through an inline import, `import("./roles").Role`. The property stays optional or `readonly` when it was, and a `?` after it makes it optional.
+- `skip` leaves a generated type or a property out of the file. A type that a kept type uses cannot be left out: the command names the properties that use it, such as `Task.assignee`, to leave them out too or to write them by hand.
+- `types` and `skip` take the generated names or the new ones, and a name that is both is the generated one. A name or a property that the generated file does not have stops the command, so that a change never stops applying silently when the API changes; so does a change made twice, such as a property both written by hand and left out.
 
 API Platform leaves the null values out of its responses, hence the optional properties. For an API that returns them, because some or all of its resources set `skip_null_values` to `false`, `--keep-null-values` writes every nullable property as `note?: string | null`:
 
@@ -451,6 +476,8 @@ A documentation behind authentication is read with `--header`, which can be repe
 ```bash
 npx apiplatform-fetch-builder generate https://api.example.com/api src --header "Authorization: Bearer <token>"
 ```
+
+A user and a password in the URL, `https://user:password@api.example.com/api`, are sent as a basic authentication.
 
 A local API served with a certificate of a local authority, such as the one of the Symfony CLI, is refused by Node unless it trusts that authority: start the command with `NODE_OPTIONS=--use-system-ca` (Node 22.15 or later) when the authority is installed in the system, or give `NODE_EXTRA_CA_CERTS` its certificate. The file mode avoids the question, with the two documents downloaded first from `/docs` (`Accept: application/vnd.openapi+json` and `Accept: application/ld+json`).
 
@@ -566,7 +593,7 @@ A route that serializes a resource in another way is typed with its own model. W
 | `getAllPages(query, onProgress?)` | Same with filters/sorting/pageSize |
 | `update(idOrIri, body)` or `update(bodyWithId)` | PATCH — the body is sent without `id` and the JSON-LD keys (`@id`, `@type`, `@context`), and with its embedded resources as IRIs. The body follows the [model of the resource](#model-of-a-resource): every property is optional, a relation is its IRI, and naming a `readonly` property is a compile error |
 | `replace(idOrIri, body)` or `replace(bodyWithId)` | PUT — same rule for the body, except that every property that is not nullable is required, since a standard `PUT` resets what is left out. API Platform 4 and later do not expose `PUT` by default: the resource has to declare the operation |
-| `upsert(body)` | POST if there is no id (absent, `null` or empty), PATCH if `@id` or `id` is present |
+| `upsert(body)` | POST if there is no id (absent, `null` or empty, or an `@id` the API generated without an `id`), PATCH if `@id` or `id` is present |
 | `delete(idOrIri)` | DELETE |
 
 An identifier is URL-encoded into the path of the resource; an IRI is requested as it is.
