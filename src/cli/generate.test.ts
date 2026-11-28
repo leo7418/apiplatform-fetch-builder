@@ -1752,7 +1752,7 @@ export type Review = {
 							spot: {
 								allOf: [reference("Place"), { nullable: true }],
 							},
-							badges: {
+							aliases: {
 								anyOf: [
 									{ type: "object", additionalProperties: { type: "string" } },
 									{ type: "array", maxItems: 0 },
@@ -1820,7 +1820,7 @@ export type Member = {
 	spot?: {
 		street: string;
 	};
-	badges: { [key: string]: string } | [];
+	aliases: { [key: string]: string } | [];
 };
 export type MemberBody = WriteBody<Member> & {
 	plainPassword?: string | null;
